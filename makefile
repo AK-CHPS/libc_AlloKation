@@ -3,3 +3,6 @@ alan: alan_test.c
 
 killian: killian_test.c
 	gcc killian_test.c -o killian_test -Wall
+
+strassen: strassen.c
+	gcc strassen.c -o strassen -O3 -Wall -lpthread
