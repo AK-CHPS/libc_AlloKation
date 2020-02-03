@@ -3,3 +3,9 @@ alan: alan_test.c
 
 strassen: strassen.c
 	gcc strassen.c -o strassen -O3 -Wall -lpthread
+
+bin: bin.c
+	gcc bin.c -o bin -lm -Wall
+
+test: test.c 
+	gcc test.c -o test -lm -Wall
