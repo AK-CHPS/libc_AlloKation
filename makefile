@@ -9,3 +9,6 @@ bin: bin.c
 
 test: test.c 
 	gcc test.c -o test -lm -Wall
+
+lib_test: lib_test.c
+	gcc -Wall -o lib_test lib_test.c -lmAlloK -lm

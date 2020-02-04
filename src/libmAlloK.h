@@ -1,5 +1,5 @@
-#ifndef _mAlloK_h
-#define _mAlloK_h
+#ifndef _libmAlloK_h
+#define _libmAlloK_h
 
 #include <stdlib.h>
 #include <malloc.h>
