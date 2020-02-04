@@ -126,7 +126,7 @@ void *my_malloc(size_t size)
 
 	if(ptr == NULL){
 		ptr = add_block(size);
-		ptr->size_status |= status_mask;
+		ptr->size_status += status_mask;
 		add_chunk(ptr);
 		return ptr+1;
 	}else{
@@ -154,10 +154,10 @@ void my_free(void *ptr)
 {
 	chunk_t *chunk = ptr-sizeof(chunk_t);
 
-	chunk->size_status &= size_mask;
+	chunk->size_status -= status_mask;
 	del_chunk(chunk);
 
-	if(chunk->prev != NULL && (chunk->prev->size_status & status_mask)){
+	if(chunk->prev != NULL && (chunk->prev->size_status & status_mask == 0)){
 		del_chunk(chunk);
 		del_chunk(chunk->prev);
 		chunk->prev->next = chunk->next;
@@ -165,7 +165,7 @@ void my_free(void *ptr)
 		add_chunk(chunk->prev);
 		chunk = chunk->prev;
 	}
-	if(chunk->next != NULL && (chunk->next->size_status & status_mask)){
+	if(chunk->next != NULL && (chunk->next->size_status & status_mask == 0)){
 		del_chunk(chunk);
 		del_chunk(chunk->next);
 		chunk->next = chunk->next->next;
@@ -197,23 +197,20 @@ void *my_realloc(void *ptr, size_t size)
 
 int main(int argc, char const *argv[])
 {
-	print_tab();
-
-	int *tab = my_malloc(100*sizeof(int));
-
-	for(int i = 0; i < 100; i++){
-		tab[i] = i+1;
-	}
-
-	tab = my_realloc(tab,sizeof(int)*500);
-
-	for(int i = 0; i < 500; i++){
-		printf("tab[%d] = %d\n", i, tab[i]);
-	}
+	void *A = my_malloc(10);
 
 	print_tab();
 
-	my_free(tab);
+	void *B = my_calloc(15,sizeof(char));
+
+	print_tab();
+
+	A = my_realloc(A,20);
+	
+	print_tab();
+
+	my_free(A);
+	my_free(B);
 
 	return 0;
 }
