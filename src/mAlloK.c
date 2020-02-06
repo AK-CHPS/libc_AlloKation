@@ -34,36 +34,30 @@ void *mAlloK(size_t size)
 {
   printf("\n OUR MALLOC !!!!!!\n");
   chunk_t *ptr = search_size(size+sizeof(chunk_t));
-  
-  if(ptr == NULL)
-    {
-      ptr = add_block(size);
+
+  if(ptr == NULL){
+    ptr = add_block(size);
+    ptr->size_status += status_mask;
+    add_chunk(ptr);
+    return ptr+1;
+  }else{
+    if(ptr->size_status - (sizeof(chunk_t)+size) < sizeof(chunk_t)){
       ptr->size_status |= status_mask;
+      return ptr+1;
+    }else{
+      del_chunk(ptr);
+      chunk_t *new_chunk = (chunk_t*)((void*)ptr + size + sizeof(chunk_t));
+      new_chunk->size_status = ptr->size_status - size - sizeof(chunk_t);
+      new_chunk->prev = ptr;
+      new_chunk->next = ptr->next;
+      ptr->next = new_chunk;
+      ptr->size_status = size | status_mask;
       add_chunk(ptr);
+      add_chunk(new_chunk);
       return ptr+1;
     }
-  else
-    {
-      if(ptr->size_status - (sizeof(chunk_t)+size) < sizeof(chunk_t))
-	{
-	  ptr->size_status |= status_mask;
-	  return ptr+1;
-	}
-      else
-	{
-	  del_chunk(ptr);
-	  chunk_t *new_chunk = (chunk_t*)((void*)ptr + size + sizeof(chunk_t));
-	  new_chunk->size_status = ptr->size_status - size - sizeof(chunk_t);
-	  new_chunk->prev = ptr;
-	  new_chunk->next = ptr->next;
-	  ptr->next = new_chunk;
-	  ptr->size_status = size | status_mask;
-	  add_chunk(ptr);
-	  add_chunk(new_chunk);
-	  return ptr+1;
-	}
-    }
-  
+  }
+
   return NULL;
 }
 
@@ -72,26 +66,25 @@ void freeAK(void *ptr)
   printf("\n OUR FREE !!!!!!\n");
   chunk_t *chunk = ptr-sizeof(chunk_t);
 
-  chunk->size_status &= size_mask;
+  chunk->size_status -= status_mask;
   del_chunk(chunk);
 
-  if(chunk->prev != NULL && (chunk->prev->size_status & status_mask))
-    {
-      del_chunk(chunk);
-      del_chunk(chunk->prev);
-      chunk->prev->next = chunk->next;
-      chunk->prev->size_status += chunk->size_status + sizeof(chunk_t);
-      add_chunk(chunk->prev);
-      chunk = chunk->prev;
-    }
-  if(chunk->next != NULL && (chunk->next->size_status & status_mask))
-    {
-      del_chunk(chunk);
-      del_chunk(chunk->next);
-      chunk->next = chunk->next->next;
-      chunk->size_status += chunk->next->size_status + sizeof(chunk_t);
-      add_chunk(chunk);
-    }
+  if(chunk->prev != NULL && (chunk->prev->size_status & status_mask == 0)){
+    del_chunk(chunk);
+    del_chunk(chunk->prev);
+    chunk->prev->next = chunk->next;
+    chunk->prev->size_status += chunk->size_status + sizeof(chunk_t);
+    add_chunk(chunk->prev);
+    chunk = chunk->prev;
+  }
+  if(chunk->next != NULL && (chunk->next->size_status & status_mask == 0)){
+    del_chunk(chunk);
+    del_chunk(chunk->next);
+    chunk->next = chunk->next->next;
+    chunk->size_status += chunk->next->size_status + sizeof(chunk_t);
+    add_chunk(chunk);
+  }
+
 }
 
 void *cAlloK(size_t nmemb, size_t size)
@@ -108,7 +101,7 @@ void *reAlloK(void *ptr, size_t size)
   void *old_ptr = ptr;
   chunk_t *old_chunk = ptr-sizeof(chunk_t);
   size_t old_size = old_chunk->size_status & size_mask;
-	
+  
   freeAK(ptr);
   ptr = mAlloK(size);
   if(ptr != old_ptr)
