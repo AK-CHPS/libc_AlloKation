@@ -11,6 +11,7 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <pthread.h>
 
 ////////////////////////////////////////////////////////////////////////////
 
@@ -54,6 +55,9 @@ static block_t *memory = NULL;
 
 // min macro
 #define min(a,b) ((a < b) ? a : b)
+
+// initialisation mutex
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 ////////////////////////////////////////////////////////////////////////////
 
@@ -175,6 +179,11 @@ static void free_chunk(chunk_t *chunk)
       chunk->next = chunk->next->next;
     }
   }
+
+  if(chunk->previous == NULL && chunk->next == NULL){
+    del_block(chunk->block);
+  }
+
   return;
 }
 
@@ -198,6 +207,8 @@ static chunk_t * search_chunk(size_t size)
 
 void *mAlloK(size_t size)
 {
+  pthread_mutex_lock(&mutex);
+
   chunk_t *ptr = search_chunk(size);
 
   if(ptr != NULL){
@@ -214,29 +225,48 @@ void *mAlloK(size_t size)
     return alloc_chunk(block->head,size)+1;
   }
 
+  pthread_mutex_unlock(&mutex);
+
   return NULL;
 }
 
 void freeAK(void *ptr)
 {
+  pthread_mutex_lock(&mutex);
+
   free_chunk(ptr-sizeof(chunk_t));
+
+  pthread_mutex_unlock(&mutex);
 }
 
 void *cAlloK(size_t nmemb, size_t size)
 {
+  pthread_mutex_lock(&mutex);
+
   void *adr = mAlloK(nmemb*size);
 
-  return memset(adr, 0, nmemb*size);
+  adr = memset(adr, 0, nmemb*size);
+
+  pthread_mutex_unlock(&mutex);
+  
+  return adr;
 }
 
 void *reAlloK(void *ptr, size_t size)
 {
+  pthread_mutex_lock(&mutex);
+
   chunk_t *old_chunk = ptr - sizeof(chunk_t);
 
   size_t old_size = old_chunk->size_status & size_mask;
-  free_chunk(old_chunk);
 
   void *new_ptr = mAlloK(size);
 
-  return memcpy(new_ptr, ptr, min(size,old_size));
+  memcpy(new_ptr, ptr, min(size,old_size));
+
+  free_chunk(old_chunk);
+
+  pthread_mutex_unlock(&mutex);
+
+  return new_ptr;
 }

@@ -128,14 +128,14 @@ int main(int argc, char const *argv[])
 		}
 	}
 
-
-printf("%lf	%lf	%lf	%lf	%lf	%lf\n",															\
-		(double) malloc_sum/malloc_cpt, 														\
-		(double) calloc_sum/calloc_cpt,															\
-		(double) realloc_sum/realloc_cpt,														\
-		(double) free_sum/free_cpt,																\
-		(double) write_sum/write_cpt,															\
-		(double) read_sum/read_cpt);															\
+	printf("Malloc\t\tCalloc\t\tRealloc\t\tFree\t\tWrite\t\tRead en octets/cycle\n");
+	printf("%lf\t%lf\t%lf\t%lf\t%lf\t%lf\n",														\
+			(double) malloc_cpt/malloc_sum, 														\
+			(double) calloc_cpt/calloc_sum,															\
+			(double) realloc_cpt/realloc_sum,														\
+			(double) free_cpt/free_sum,																\
+			(double) write_cpt/write_sum,															\
+			(double) read_cpt/read_sum);															\
 
 
 	return 0;
