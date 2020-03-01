@@ -6,25 +6,23 @@
 #include <math.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 #define NEW_VERSION
 #ifndef N
 	#define N 1000
 #endif
-/*********************************************************************************
-										Data
-*********************************************************************************/
 
-//compteur de mmap
-static u_int64_t mmap_cpt = 0;
+#ifndef WARN
+	#define WARN 1
+#endif
 
-//compteur de munmap
-static u_int64_t munmap_cpt = 0;
+////////////////////////////////////////////////////////////////////////////
 
 // mask pour obtenir le status
-static const u_int64_t status_mask = 0x8000000000000000;
+static const size_t status_mask = 0x8000000000000000;
 // mask pour obtenir la taille
-static const u_int64_t size_mask = 0x7fffffffffffffff;
+static const size_t size_mask = 0x7fffffffffffffff;
 
 // structure d'un block
 typedef struct block_t block_t;
@@ -35,432 +33,334 @@ typedef struct chunk_t chunk_t;
 // structre d'un block
 struct block_t
 {
-	size_t size;
-	void *first_address;
-	void *last_address;
-	chunk_t *stack;
-	block_t *previous;
-	block_t *next;
+  size_t size;
+
+  chunk_t *stack;
+
+  block_t *previous;
+  block_t *next;
 };
 
 // structure d'un chunk
 struct chunk_t
 {
-	size_t size_status;
-	chunk_t *previous;
-	chunk_t *next;
+  size_t size_status;
+
+  chunk_t *previous;
+  chunk_t *next;
+  
+  chunk_t *previous_free;
+  chunk_t *next_free;
+
+  block_t *block;
 };
 
-/*********************************************************************************
-**********************************************************************************
-NOUVELLE VERSION / NOUVELLE VERSION / NOUVELLE VERSION / NOUVELLE VERSION / NOUVEL
-**********************************************************************************
-*********************************************************************************/
-#ifdef NEW_VERSION
-
 // taille minimum d'un mmap
-#define SIZE_MIN_BLOCK (128*1024)
+#ifndef SIZE_MIN_BLOCK
+	#define SIZE_MIN_BLOCK (128*1024)
+#endif
+
+// strategie d'allocation
+#define BEST_FIT 1
+#define WORST_FIT 2
+#define FIRST_FIT 3
+
+#ifndef STRATEGY
+	#define STRATEGY FIRST_FIT
+#endif
 
 // liste de block
-static block_t *head = NULL;
-static block_t *tail = NULL;
+static block_t *memory = NULL;
+static chunk_t *memory_free = NULL;
 
-/*********************************************************************************
-									Prototypes
-*********************************************************************************/
+// compteur de mémoire alloué
+static size_t allocated_memory = 0;
 
-void *my_malloc(size_t size);
+// min macro
+#define min(a,b) ((a < b) ? a : b)
 
-void my_free(void *ptr);
+// initialisation mutex
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void *my_calloc(size_t nmemb, size_t size);
+////////////////////////////////////////////////////////////////////////////
 
-void *my_realloc(void *ptr, size_t size);
+// ajout d'un chunk libre
+static inline void add_free_chunk(chunk_t *chunk)
+{
+	if(memory_free != NULL){
+		memory_free->previous_free = chunk;}
 
-/*********************************************************************************
-								Gestion de blocks
-*********************************************************************************/
+	chunk->next_free = memory_free;
+	chunk->previous_free = NULL;
+	memory_free = chunk;
+}
+
+// suppression d'un chunk libre
+static inline void del_free_chunk(chunk_t *chunk)
+{
+	if(memory_free == chunk){
+		memory_free = chunk->next_free;
+	}
+	if(chunk->next_free != NULL){
+		chunk->next_free->previous_free = chunk->previous_free;
+	}
+	if(chunk->previous_free != NULL){
+		chunk->previous_free->next_free = chunk->next_free;
+	}
+}
 
 // permet d'ajouter un block a la liste
 static block_t * add_block(size_t size)
 {
-	// allocation de la mémoire
-	void *ptr = mmap(0, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	
-	// cast en chunk et en block
-	block_t *block = ptr;
-	chunk_t *chunk = ptr+sizeof(block_t);
+  // allocation de la mémoire
+  void *ptr = mmap(0, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  
+  // ajout de allocated memory
+  allocated_memory += size;
 
-	// initialisation du block
-	block->first_address = ptr+sizeof(block_t)+sizeof(chunk_t);
-	block->last_address = ptr+sizeof(block_t) + sizeof(chunk_t) + size;
-	block->size = size;
-	block->next = head;
-	block->previous = NULL;
-	block->stack = chunk;
-	head = block;
-	
-	// si la liste est pas vide et sinon
-	if(block->next != NULL){
-		block->next->previous = block;
-	}else{
-		tail = ptr;
-	}
+  // cast en chunk et en block
+  block_t *block = ptr;
+  chunk_t *chunk = ptr+sizeof(block_t);
 
-	// initialisation du premier chunk
-	chunk->size_status = size;
-	chunk->next = NULL;
-	chunk->previous = NULL;
+  // initialisation du block
+  block->size = size;
+  block->next = memory;
+  block->previous = NULL;
 
-	return ptr;
+  block->stack = chunk;
+
+  memory = block;
+  
+  // si la liste est pas vide et sinon
+  if(block->next != NULL){
+    block->next->previous = block;
+  }
+
+  // initialisation du premier chunk
+  chunk->size_status = size;
+  chunk->previous_free = NULL;
+  chunk->next_free = NULL;
+  chunk->next = NULL;
+  chunk->previous = NULL;
+  chunk->block = block;
+
+  add_free_chunk(chunk);
+
+  return ptr;
 }
 
 // permet de supprimer un block particulier
 static void del_block(block_t *block)
 {
-	if(head == block){
-		head = block->next;
-	}
-	if(tail == block){
-		tail = block->previous;
-	}
-	if(block->previous != NULL){
-		block->previous->next = block->next;
-	}
-	if(block->next != NULL){
-		block->next->previous = block->previous;
-	}
+  if(memory == block){
+    memory = block->next;
+  }
+  if(block->previous != NULL){
+    block->previous->next = block->next;
+  }
+  if(block->next != NULL){
+    block->next->previous = block->previous;
+  }
 
-	munmap(block,block->size+sizeof(chunk_t)+sizeof(block_t));
+  allocated_memory -= block->size;
 
-	return ;
+  munmap(block,block->size+sizeof(chunk_t)+sizeof(block_t));
+
+  return ;
 }
 
-// permet d'afficher la pile de chaque block
-static int print_stack(block_t *block)
-{
-	chunk_t *ptr = block->stack;
-	while(ptr != NULL){
-		printf("\tAddresse du chunk precedent: %zu\n", ptr->previous);
-		printf("\tAddresse du chunk: %zu\n", ptr);
-		printf("\tTaille du chunk: %zu\n", ptr->size_status & size_mask);
-		printf("\tAllocation du chunk: %zu\n", ptr->size_status >> 63);
-		printf("\tAddresse du chunk suivant: %zu\n\n", ptr->next);
-		ptr = ptr->next;
-	}
-	return 0;
-}
-
-// permet d'afficher la memoire alloué
-static int print_memory()
-{
-	block_t *ptr = head;
-	while(ptr != NULL){
-		printf("\n-------------------------\n");
-		printf("Addresse du block precedent: %zu\n", ptr->previous);
-		printf("Addresse du block: %zu\n", ptr);
-		printf("First addresse: %zu\n", ptr->first_address);
-		printf("Last addresse: %zu\n", ptr->last_address);
-		printf("Taille du block: %zu\n", ptr->size);
-		printf("Premier chunk de la pile: %zu\n", ptr->stack);
-		printf("Addresse du prochain block: %zu\n\n", ptr->next);
-		print_stack(ptr);
-		ptr = ptr->next;
-	}
-
-	return 0;
-}
-
-/*********************************************************************************
-								Gestion de chunk
-*********************************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
 // permet d'allouer un chunk
 static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
 {
-	if(chunk != NULL && chunk->size_status >> 63 != 1 && size <= chunk->size_status){
-		if(chunk->size_status-sizeof(chunk_t)-size < sizeof(chunk_t)){
-			chunk->size_status |= status_mask;
+  if(chunk != NULL && (chunk->size_status >> 63) == 0 && size <= chunk->size_status){
+    if(chunk->size_status - size <= sizeof(chunk_t)){
+      chunk->size_status |= status_mask;
 
-			return chunk;
-		}else{
-			chunk->size_status -= (sizeof(chunk_t)+size);
-			void *new_address = (void*)chunk + chunk->size_status +  sizeof(chunk_t);
-			chunk_t *new_chunk = new_address;
-			new_chunk->next = chunk->next;
+      del_free_chunk(chunk);
 
-			if(chunk->next != NULL){
-				chunk->next->previous = new_chunk;
-			}			
-			
-			chunk->next = new_chunk;
-			new_chunk->previous = chunk;
-			new_chunk->size_status = size + status_mask;
+      return chunk;
+    }else{
+      chunk->size_status -= size + sizeof(chunk_t);
+      void *new_address = (void*)chunk + chunk->size_status + sizeof(chunk_t);
+      chunk_t *new_chunk = new_address;
+      new_chunk->next = chunk->next;
 
-			return new_chunk;
-		}
-	}
+      if(chunk->next != NULL){
+        chunk->next->previous = new_chunk;
+      }     
+      
+      chunk->next = new_chunk;
+      new_chunk->previous = chunk;
+      new_chunk->size_status = size + status_mask;
+      new_chunk->block = chunk->block;
 
-	return NULL;
+      return new_chunk;
+    }
+  }
+
+  return NULL;
 }
 
 // permet de liberer un chunk 
 static void free_chunk(chunk_t *chunk)
 {
-	if(chunk != NULL && chunk->size_status >> 63 != 0){
-		chunk->size_status &= size_mask;
+  if(chunk != NULL && chunk->size_status >> 63 != 0){
+    chunk->size_status &= size_mask;
 
-		if(chunk->previous != NULL && chunk->previous->size_status >> 63 == 0){
-			chunk->previous->next = chunk->next;
-			if(chunk->next != NULL){
-				chunk->next->previous = chunk->previous;}
-			chunk->previous->size_status += (chunk->size_status + sizeof(chunk_t));
-			chunk = chunk->previous;
-		}
+    if(chunk->previous != NULL && chunk->previous->size_status >> 63 == 0){
+      del_free_chunk(chunk->previous);
 
-		if(chunk->next != NULL && chunk->next->size_status >> 63 == 0){
-			if(chunk->next->next != NULL){
-				chunk->next->next->previous = chunk;
-			}
-			chunk->size_status += chunk->next->size_status + sizeof(chunk_t);
-			chunk->next = chunk->next->next;
-		}
-	}
-	return;
+      chunk->previous->next = chunk->next;
+      if(chunk->next != NULL){
+        chunk->next->previous = chunk->previous;}
+      chunk->previous->size_status += (chunk->size_status + sizeof(chunk_t));
+      chunk = chunk->previous;
+    }
+
+    if(chunk->next != NULL && chunk->next->size_status >> 63 == 0){
+      del_free_chunk(chunk->next);
+
+      if(chunk->next->next != NULL){
+        chunk->next->next->previous = chunk;
+      }
+      chunk->size_status += chunk->next->size_status + sizeof(chunk_t);
+      chunk->next = chunk->next->next;
+    }
+  }
+
+  if(chunk->previous == NULL && chunk->next == NULL){
+  	del_free_chunk(chunk);
+    del_block(chunk->block);
+  }else{
+  	add_free_chunk(chunk);
+  }
+
+  return;
 }
 
-// retourne le premier chunk libre de taille superieur ou égale à size
-static chunk_t * search_chunk(size_t size)
-{
-	return NULL;
-}
+#if STRATEGY == BEST_FIT
 
-/*********************************************************************************
-							Fonctions standards
-*********************************************************************************/
+	// retourne le plus petit block suffisament grand pour contenir la quantité de mémoire demandé
+	static inline chunk_t* search_chunk(size_t size)
+	{
+		chunk_t *to_return = NULL, *ptr = memory_free;
+		size_t chunk_size = 0xFFFFFFFFFFFFFFFF;
 
-void *my_malloc(size_t size)
-{
-	return NULL;
-}
-
-void my_free(void *ptr)
-{
-	return;
-}
-
-void *my_calloc(size_t nmemb, size_t size)
-{
-	return NULL;
-}
-
-void *my_realloc(void *ptr, size_t size)
-{
-	return NULL;
-}
-
-/*********************************************************************************
-					Chargement et dechargment preventif
-*********************************************************************************/
-
-// alloue un premier chunk dans le doute :) 
-__attribute__((constructor)) void my_constructor(void) 
-{
-
-}
-
-// supprime la mémoire dans le doute :) 
-__attribute__((destructor)) void my_destructor(void) 
-{
-
-}
-
-#endif
-
-
-/*********************************************************************************
-**********************************************************************************
-ANCIENNE VERSION / ANCIENNE VERSION / ANCIENNE VERSION / ANCIENNE VERSION / ANCIEN
-**********************************************************************************
-*********************************************************************************/
-#ifdef OLD_VERSION
-
-/*********************************************************************************
-									Hach Table
-*********************************************************************************/
-
-/* Hach table for size */
-static chunk_t *size_tab[218] = {};
-
-/* Fonction de hachage permettant d'acceder aux chunks en fonction de leurs tailles*/
-static inline int size_hachage(size_t size)
-{
-	if(size >= 512){
-		return log2(size+1)*7; /* OK */
-	}else{
-		return size>>3;	/* OK */
-	}
-}
-
-static void add_chunk(chunk_t *ptr)
-{
-	const int index = size_hachage(ptr->size_status & size_mask);
-	ptr->tab_next = size_tab[index];
-	size_tab[index] = ptr;
-}
-
-static void del_chunk(chunk_t *ptr)
-{
-	const int index = size_hachage(ptr->size_status & size_mask);
-
-	chunk_t *tmp = size_tab[index];
-
-	if(tmp == ptr){
-		size_tab[index] = tmp->tab_next;
-		tmp->tab_next = NULL;
-		return;}
-	while(tmp->tab_next != ptr && tmp != NULL){
-		tmp = tmp->tab_next;}
-	if(tmp != NULL){
-		chunk_t *old_next = tmp->tab_next;
-		tmp->tab_next = tmp->tab_next->tab_next;
-		old_next->tab_next = NULL;
-	}
-}
-
-static void print_tab()
-{
-	printf("------------------ Print Tab --------------------\n");
-	for(int i = 0; i < 218; i++){
-		chunk_t *ptr = size_tab[i];
-		if(ptr != NULL)	printf("size_tab[%d]: \n", i);
 		while(ptr != NULL){
-			printf("\t\t|\n");
-			printf("previous address: %zu\n", ptr->prev);
-			printf("address: %zu\n", ptr);
-			printf("next address: %zu\n", ptr->next);
-			printf("size : %zu status: %zu\n", ptr->size_status & size_mask, ptr->size_status & status_mask);
-			ptr = ptr->tab_next;
+			if((ptr->size_status & size_mask) < chunk_size && (ptr->size_status & size_mask) >= size){
+				to_return = ptr;
+				chunk_size = (ptr->size_status & size_mask);}
+			ptr = ptr->next_free;
 		}
+
+		return to_return;
 	}
-}
 
+#elif STRATEGY == WORST_FIT
 
-static chunk_t *search_size(size_t size)
-{
-	const int index = size_hachage(size);
+	// retourne le plus gros block suffisament grand pour contenir la quantité de mémoire demandé
+	static inline chunk_t* search_chunk(size_t size)
+	{
+		chunk_t *to_return = NULL, *ptr = memory_free;
+		size_t chunk_size = 0;
 
-	for(int i = index; i < 218; i++){
-		chunk_t *ptr = size_tab[i];
 		while(ptr != NULL){
-			if((ptr->size_status & status_mask) == 0){
+			if((ptr->size_status & size_mask) > chunk_size && (ptr->size_status & size_mask) >= size){
+				to_return = ptr;
+				chunk_size = (ptr->size_status & size_mask);}
+			ptr = ptr->next_free;
+		}
+
+		return to_return;
+	}
+
+#else
+
+	// retourne le premier block suffisament grand pour contenir la quantité de mémoire demandé
+	static inline chunk_t* search_chunk(size_t size)
+	{
+		chunk_t *ptr = memory_free;
+
+		while(ptr != NULL){
+			if((ptr->size_status & size_mask) >= size){
 				return ptr;}
-			ptr = ptr->tab_next;
+			ptr = ptr->next_free;
 		}
+
+		return NULL;
 	}
-	return NULL;
-}
 
-/*********************************************************************************
-								Block Managment
-**********************************************************************************/
+#endif
 
-static chunk_t *add_block(size_t size)
-{
-	chunk_t *chunk = mmap(0, sizeof(chunk_t)+size, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	chunk->prev = NULL;
-	chunk->size_status = size;
-	chunk->next = NULL;
-	mmap_cpt++;
-	return chunk;
-}
-
-static void del_block(chunk_t *chunk)
-{
-	munmap(chunk, sizeof(chunk)+ (chunk->size_status & size_mask));
-	munmap_cpt++;
-}
-
-/*********************************************************************************
-								Chunk Managment
-**********************************************************************************/
+////////////////////////////////////////////////////////////////////////////
 
 void *my_malloc(size_t size)
 {
-	chunk_t *ptr = search_size(size+sizeof(chunk_t));
+  pthread_mutex_lock(&mutex);
 
-	if(ptr == NULL){
-		ptr = add_block(size);
-		ptr->size_status += status_mask;
-		add_chunk(ptr);
-		return ptr+1;
-	}else{
-		if(ptr->size_status - (sizeof(chunk_t)+size) < sizeof(chunk_t)){
-			ptr->size_status |= status_mask;
-			return ptr+1;
-		}else{
-			del_chunk(ptr);
-			chunk_t *new_chunk = (chunk_t*)((void*)ptr + size + sizeof(chunk_t));
-			new_chunk->size_status = ptr->size_status - size - sizeof(chunk_t);
-			new_chunk->prev = ptr;
-			new_chunk->next = ptr->next;
-			ptr->next = new_chunk;
-			ptr->size_status = size | status_mask;
-			add_chunk(ptr);
-			add_chunk(new_chunk);
-			return ptr+1;
-		}
-	}
+  chunk_t *ptr = search_chunk(size);
 
-	return NULL;
+  if(ptr != NULL){
+    return alloc_chunk(ptr,size)+1;
+  }else{
+    block_t *block;
+
+    if(size < SIZE_MIN_BLOCK){
+      block = add_block(SIZE_MIN_BLOCK);
+    }else{
+      block = add_block(size);
+    }
+
+    return alloc_chunk(block->stack,size)+1;
+  }
+
+  pthread_mutex_unlock(&mutex);
+
+  return NULL;
 }
 
 void my_free(void *ptr)
 {
-	chunk_t *chunk = ptr-sizeof(chunk_t);
+  pthread_mutex_lock(&mutex);
 
-	chunk->size_status -= status_mask;
-	del_chunk(chunk);
+  free_chunk(ptr-sizeof(chunk_t));
 
-	if(chunk->prev != NULL && (chunk->prev->size_status & status_mask == 0)){
-		del_chunk(chunk);
-		del_chunk(chunk->prev);
-		chunk->prev->next = chunk->next;
-		chunk->prev->size_status += chunk->size_status + sizeof(chunk_t);
-		add_chunk(chunk->prev);
-		chunk = chunk->prev;
-	}
-	if(chunk->next != NULL && (chunk->next->size_status & status_mask == 0)){
-		del_chunk(chunk);
-		del_chunk(chunk->next);
-		chunk->next = chunk->next->next;
-		chunk->size_status += chunk->next->size_status + sizeof(chunk_t);
-		add_chunk(chunk);
-	}
+  pthread_mutex_unlock(&mutex);
 }
 
 void *my_calloc(size_t nmemb, size_t size)
 {
-	void *ptr = my_malloc(size*nmemb);
-	memset(ptr, 0, size*nmemb);
-	return ptr;
+  pthread_mutex_lock(&mutex);
+
+  void *adr = my_malloc(nmemb*size);
+
+  adr = memset(adr, 0, nmemb*size);
+
+  pthread_mutex_unlock(&mutex);
+  
+  return adr;
 }
 
 void *my_realloc(void *ptr, size_t size)
 {
-	void *old_ptr = ptr;
-	chunk_t *old_chunk = ptr-sizeof(chunk_t);
-	size_t old_size = old_chunk->size_status & size_mask;
-	
-	my_free(ptr);
-	ptr = my_malloc(size);
-	if(ptr != old_ptr)
-		memcpy(ptr,old_ptr,old_size);
+  pthread_mutex_lock(&mutex);
 
-	return ptr;
+  chunk_t *old_chunk = ptr - sizeof(chunk_t);
+
+  size_t old_size = old_chunk->size_status & size_mask;
+
+  void *new_ptr = my_malloc(size);
+
+  memcpy(new_ptr, ptr, min(size,old_size));
+
+  free_chunk(old_chunk);
+
+  pthread_mutex_unlock(&mutex);
+
+  return new_ptr;
 }
-
-#endif
 
 size_t rand_a_b(size_t a, size_t b)
 {
@@ -477,63 +377,165 @@ static inline u_int64_t rdtsc (void)
   return (d << 32) | a;
 }
 
+static void print_memory()
+{
+	static size_t instant = 0;
+
+	FILE *f_alloc = fopen("dat/allocated_memory.dat","a");
+	FILE *f_free = fopen("dat/free_memory.dat","a");
+	FILE *f_list_free = fopen("dat/free_list_memory.dat","a");
+
+	block_t *block_ptr = memory;
+	while(block_ptr != NULL){
+		chunk_t *chunk_ptr = block_ptr->stack;
+		while(chunk_ptr != NULL){
+			void *original_ptr = chunk_ptr;
+			for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
+				if(chunk_ptr->size_status & status_mask){
+					fprintf(f_alloc, "%zu %p\n ", instant, ptr);
+				}else{
+					fprintf(f_free, "%zu %p\n ", instant, ptr);
+				}
+			}
+			chunk_ptr = chunk_ptr->next;
+		}
+		block_ptr = block_ptr->next;
+	}
+
+	chunk_t *chunk_ptr = memory_free;
+	while(chunk_ptr != NULL){
+		void *original_ptr = chunk_ptr;
+		for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
+			fprintf(f_list_free, "%zu %p\n ", instant, ptr);
+		}	
+
+		chunk_ptr = chunk_ptr->next_free;
+	}
+
+	fclose(f_free);
+	fclose(f_alloc);
+	fclose(f_list_free);
+
+	instant++;
+}
+
 int main(int argc, char const *argv[])
 {
 	srand(time(NULL));
 
-	printf("taille d'un block: %zu\n", sizeof(block_t));
-	printf("taille d'un chunk: %zu\n\n", sizeof(chunk_t));
+	remove("dat/allocated_memory.dat");
+	remove("dat/free_memory.dat");
+	remove("dat/free_list_memory.dat");
 
-	size_t size = 0, free_cpt = 0, allocation_sum = 0, free_sum = 0;
-	u_int64_t start = 0, stop = 0, cpt = 0;
-
-	for(int i = 0; cpt < N; i++){
-		size = rand_a_b(2000,100000);
-		block_t *block = add_block(size);
-		size_t nb_chunk = rand_a_b(2,11);
-		chunk_t *t[N] = {};
-		for(int j = 0; j < nb_chunk-1; j++){
-			start = rdtsc();
-			t[j] = alloc_chunk(block->stack,size/(nb_chunk+1));}
-			stop = rdtsc();
-			allocation_sum += stop - start;
-		for(int j = 0; j < nb_chunk-1; j++){
-			if(rand_a_b(0,2)){
-				start = rdtsc();
-				free_chunk(t[j]);
-				stop = rdtsc();
-				free_sum += stop - start;
-				free_cpt++;}}
-		del_block(block);
-		cpt += nb_chunk;
-	}
-
-
-	printf("Nombre de cycle moyen par allocation d'un chunk = %lf\n", (double)allocation_sum/N);
-	printf("Nombre de cycle moyen par free d'un chunk = %lf\n\n", (double)free_sum/free_cpt);
-
-	size = free_cpt = allocation_sum = free_sum = 0;
-	start = 0, stop = 0, cpt = 0;
-
-	block_t *t[N] = {};
+	size_t size = 0;
+	u_int64_t start = 0, stop = 0;
+	u_int64_t malloc_sum = 0, malloc_cpt = 0;
+	u_int64_t calloc_sum = 0, calloc_cpt = 0;
+	u_int64_t realloc_sum = 0, realloc_cpt = 0;
+	u_int64_t free_sum = 0, free_cpt = 0;
+	u_int64_t write_sum = 0, write_cpt = 0;
+	u_int64_t read_sum = 0, read_cpt = 0;
+	size_t used_memory = 0;
+	int *tab[N] = {};
 
 	for(int i = 0; i < N; i++){
-		size = rand_a_b(1,100000);
-		start = rdtsc();
-		t[i] = add_block(size);
-		stop = rdtsc();
-		allocation_sum += stop-start;
-		if(rand_a_b(0,2)){
+		if(WARN) printf("Iteration n° %d\n", i);
+
+		// choix de la taille
+		size = rand_a_b(1,1000);
+
+		// Soit malloc, realloc, calloc 
+		if(rand_a_b(0,2) == 0){
+			if(WARN) printf("\tMalloc de %zu octets\n", size*sizeof(int));
+			// malloc
 			start = rdtsc();
-			del_block(t[i]);
+			tab[i] = my_malloc(sizeof(int)*size);
 			stop = rdtsc();
-			free_sum += stop-start;
-			free_cpt++;
+			malloc_sum += stop - start;
+			malloc_cpt += sizeof(int)*size;
+			used_memory += size;
+			if(WARN) printf("\tFin Malloc\n\n");
+		}else{
+			if(WARN) printf("\tCalloc de %zu octets\n", size*sizeof(int));
+			// calloc
+			start = rdtsc();
+			tab[i] = my_calloc(size, sizeof(int));
+			stop = rdtsc();
+			calloc_sum += stop - start;
+			calloc_cpt += sizeof(int)*size;
+			used_memory += size;
+			if(WARN) printf("\tFin Calloc\n\n");
+		}
+
+		if(rand_a_b(0,5) == 0){
+			used_memory -= size;
+			size = rand_a_b(1,1000);
+			if(WARN) printf("\tRealloc de %zu octets\n", size*sizeof(int));
+			// realloc
+			start = rdtsc();
+			tab[i] = my_realloc(tab[i], sizeof(int) * size);
+			stop = rdtsc();
+			realloc_sum += stop - start;
+			realloc_cpt += sizeof(int)*size;
+			used_memory += size;		
+			if(WARN) printf("\tFin Realloc\n\n");
+		}
+
+		// taille du tableau dans la premiere case
+		tab[i][0] = size;
+
+		// ecriture et lecture dans le tableau
+		if(WARN) printf("\tDebut lectures et ecritures\n");
+		for(int j = 0; j <= i; j++){
+			size = tab[j][0];
+			for(int z = 1; z < size; z++){
+				start = rdtsc();
+				tab[j][z] = z;
+				stop = rdtsc();
+				write_sum += stop - start;
+				write_cpt+= sizeof(int);
+
+				start = rdtsc();
+				tab[j][z];
+				stop = rdtsc();
+				read_sum += stop - start;
+				read_cpt += sizeof(int);
+
+			} 
+		}
+		if(WARN) printf("\tFin lectures et ecritures\n\n");
+
+		print_memory();
+	}
+
+	size_t final_allocated_memory = allocated_memory;
+
+	// liberation de la memoire
+	for(int i = 0; i < N; i++){
+		if(tab[i] != NULL){
+			if(WARN) printf("\tFree de %zu octets\n", tab[i][0] * sizeof(int));
+			free_cpt += tab[i][0] * sizeof(int);
+			start = rdtsc();
+			my_free(tab[i]);
+			stop = rdtsc();
+			free_sum += stop - start;
+			if(WARN) printf("\tFin Free\n\n");
 		}
 	}
 
-	printf("Nombre de cycle moyen par allocation d'un block = %lf\n", (double)allocation_sum/N);
-	printf("Nombre de cycle moyen par free d'un block = %lf\n", (double)free_sum/free_cpt);
+	printf("Malloc\t\tCalloc\t\tRealloc\t\tFree\t\tWrite\t\tRead en octets/cycle\n");
+	printf("%lf\t%lf\t%lf\t%lf\t%lf\t%lf\n",														\
+			(double) malloc_cpt/malloc_sum, 														\
+			(double) calloc_cpt/calloc_sum,															\
+			(double) realloc_cpt/realloc_sum,														\
+			(double) free_cpt/free_sum,																\
+			(double) write_cpt/write_sum,															\
+			(double) read_cpt/read_sum);	
+
+	printf("Allocated memory = %zu bytes\n", final_allocated_memory);
+	printf("Used memory = %zu bytes\n", used_memory);
+	printf("Ratio = %lf \n", (double)used_memory/final_allocated_memory);
+
 
 	return 0;
 }
