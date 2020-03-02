@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #define NEW_VERSION
 #ifndef N
@@ -33,26 +34,26 @@ typedef struct chunk_t chunk_t;
 // structre d'un block
 struct block_t
 {
-  size_t size;
+  size_t size;					// taille du block
 
-  chunk_t *stack;
+  chunk_t *stack;				// liste de chunk du block
 
-  block_t *previous;
-  block_t *next;
+  block_t *previous;			// pointeur vers le block precedent
+  block_t *next;				// pointeur vers le block suivant
 };
 
 // structure d'un chunk
 struct chunk_t
 {
-  size_t size_status;
+  size_t size_status;			// taille et status du chunk
 
-  chunk_t *previous;
-  chunk_t *next;
+  chunk_t *previous;			// pointeur vers le chunk precedent
+  chunk_t *next;				// pointeur vers le chunk suivant
   
-  chunk_t *previous_free;
-  chunk_t *next_free;
+  chunk_t *previous_free;		// pointeur vers le chunk libre precedent
+  chunk_t *next_free;			// pointeur vers le chunk libre suivant
 
-  block_t *block;
+  block_t *block;				// pointeur vers le block du chunk
 };
 
 // taille minimum d'un mmap
@@ -231,7 +232,6 @@ static void free_chunk(chunk_t *chunk)
   }
 
   if(chunk->previous == NULL && chunk->next == NULL){
-  	del_free_chunk(chunk);
     del_block(chunk->block);
   }else{
   	add_free_chunk(chunk);
@@ -390,7 +390,7 @@ static void print_memory()
 		chunk_t *chunk_ptr = block_ptr->stack;
 		while(chunk_ptr != NULL){
 			void *original_ptr = chunk_ptr;
-			for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
+			for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=512){
 				if(chunk_ptr->size_status & status_mask){
 					fprintf(f_alloc, "%zu %p\n ", instant, ptr);
 				}else{
@@ -405,7 +405,7 @@ static void print_memory()
 	chunk_t *chunk_ptr = memory_free;
 	while(chunk_ptr != NULL){
 		void *original_ptr = chunk_ptr;
-		for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
+		for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=512){
 			fprintf(f_list_free, "%zu %p\n ", instant, ptr);
 		}	
 
@@ -442,7 +442,7 @@ int main(int argc, char const *argv[])
 		if(WARN) printf("Iteration n° %d\n", i);
 
 		// choix de la taille
-		size = rand_a_b(1,1000);
+		size = rand_a_b(1,3000);
 
 		// Soit malloc, realloc, calloc 
 		if(rand_a_b(0,2) == 0){
@@ -453,7 +453,7 @@ int main(int argc, char const *argv[])
 			stop = rdtsc();
 			malloc_sum += stop - start;
 			malloc_cpt += sizeof(int)*size;
-			used_memory += size;
+			used_memory += size*sizeof(int);
 			if(WARN) printf("\tFin Malloc\n\n");
 		}else{
 			if(WARN) printf("\tCalloc de %zu octets\n", size*sizeof(int));
@@ -463,13 +463,13 @@ int main(int argc, char const *argv[])
 			stop = rdtsc();
 			calloc_sum += stop - start;
 			calloc_cpt += sizeof(int)*size;
-			used_memory += size;
+			used_memory += size*sizeof(int);
 			if(WARN) printf("\tFin Calloc\n\n");
 		}
 
 		if(rand_a_b(0,5) == 0){
-			used_memory -= size;
-			size = rand_a_b(1,1000);
+			used_memory -= size*sizeof(int);
+			size = rand_a_b(1,3000);
 			if(WARN) printf("\tRealloc de %zu octets\n", size*sizeof(int));
 			// realloc
 			start = rdtsc();
@@ -477,7 +477,7 @@ int main(int argc, char const *argv[])
 			stop = rdtsc();
 			realloc_sum += stop - start;
 			realloc_cpt += sizeof(int)*size;
-			used_memory += size;		
+			used_memory += size*sizeof(int);		
 			if(WARN) printf("\tFin Realloc\n\n");
 		}
 
@@ -536,6 +536,7 @@ int main(int argc, char const *argv[])
 	printf("Used memory = %zu bytes\n", used_memory);
 	printf("Ratio = %lf \n", (double)used_memory/final_allocated_memory);
 
+	system("gnuplot plot.sh");
 
 	return 0;
 }
