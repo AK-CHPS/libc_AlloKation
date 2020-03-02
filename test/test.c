@@ -72,7 +72,8 @@ struct chunk_t
 
 // liste de block
 static block_t *memory = NULL;
-static chunk_t *memory_free = NULL;
+static chunk_t *head_free = NULL;
+static chunk_t *tail_free = NULL;
 
 // compteur de mémoire alloué
 static size_t allocated_memory = 0;
@@ -93,19 +94,43 @@ static size_t next_mod_8(size_t size)
 // ajout d'un chunk libre
 static inline void add_free_chunk(chunk_t *chunk)
 {
-	if(memory_free != NULL){
-		memory_free->previous_free = chunk;}
-
-	chunk->next_free = memory_free;
-	chunk->previous_free = NULL;
-	memory_free = chunk;
+	if(head_free == NULL){
+		chunk->next_free = NULL;
+		chunk->previous_free = NULL;
+		head_free = chunk;
+		tail_free = chunk;
+	}else if((head_free->size_status & size_mask) >= (chunk->size_status & size_mask)){
+		head_free->previous_free = chunk;
+		chunk->next_free = head_free;
+		chunk->previous_free = NULL;
+		head_free = chunk;
+	}else{
+		chunk_t *ptr = head_free;
+		while(ptr != NULL){
+			if(((ptr->size_status & size_mask) <= (chunk->size_status & size_mask)) && (ptr->next_free == NULL || (ptr->next_free->size_status & size_mask) >= (chunk->size_status & size_mask))){
+				chunk->next_free = ptr->next_free;
+				chunk->previous_free = ptr;
+				if(ptr->next_free == NULL && tail_free == ptr){
+					tail_free = chunk;
+				}
+				if(ptr->next_free != NULL){
+					ptr->next_free->previous_free = chunk;}
+				ptr->next_free = chunk;
+				return;
+			}
+			ptr = ptr->next_free;
+		}
+	}
 }
 
 // suppression d'un chunk libre
 static inline void del_free_chunk(chunk_t *chunk)
 {
-	if(memory_free == chunk){
-		memory_free = chunk->next_free;
+	if(head_free == chunk){
+		head_free = chunk->next_free;
+	}
+	if(tail_free == chunk){
+		tail_free = chunk->previous_free;
 	}
 	if(chunk->next_free != NULL){
 		chunk->next_free->previous_free = chunk->previous_free;
@@ -180,10 +205,10 @@ static void del_block(block_t *block)
 // permet d'allouer un chunk
 static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
 {
+	del_free_chunk(chunk);
+
     if(chunk->size_status - size <= sizeof(chunk_t)){
       chunk->size_status += status_mask;
-
-      del_free_chunk(chunk);
 
       return chunk;
     }else{
@@ -199,6 +224,8 @@ static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
       new_chunk->previous = chunk;
       new_chunk->size_status = size + status_mask;
       new_chunk->block = chunk->block;
+
+      add_free_chunk(chunk);
 
       return new_chunk;
     }
@@ -240,48 +267,23 @@ static void free_chunk(chunk_t *chunk)
   return;
 }
 
-#if STRATEGY == BEST_FIT
-
-	// retourne le plus petit block suffisament grand pour contenir la quantité de mémoire demandé
-	static inline chunk_t* search_chunk(size_t size)
-	{
-		chunk_t *to_return = NULL, *ptr = memory_free;
-		size_t chunk_size = 0xFFFFFFFFFFFFFFFF;
-
-		while(ptr != NULL){
-			if((ptr->size_status & size_mask) < chunk_size && (ptr->size_status & size_mask) >= size){
-				to_return = ptr;
-				chunk_size = (ptr->size_status & size_mask);}
-			ptr = ptr->next_free;
-		}
-
-		return to_return;
-	}
-
-#elif STRATEGY == WORST_FIT
+#if STRATEGY == WORST_FIT
 
 	// retourne le plus gros block suffisament grand pour contenir la quantité de mémoire demandé
 	static inline chunk_t* search_chunk(size_t size)
 	{
-		chunk_t *to_return = NULL, *ptr = memory_free;
-		size_t chunk_size = 0;
-
-		while(ptr != NULL){
-			if((ptr->size_status & size_mask) > chunk_size && (ptr->size_status & size_mask) >= size){
-				to_return = ptr;
-				chunk_size = (ptr->size_status & size_mask);}
-			ptr = ptr->next_free;
+		if(tail_free != NULL && (tail_free->size_status & size_mask) >= size){
+			return tail_free;
 		}
 
-		return to_return;
+		return NULL;
 	}
 
 #else
-
-	// retourne le premier block suffisament grand pour contenir la quantité de mémoire demandé
+	// retourne le premier chunk de taille suffisante
 	static inline chunk_t* search_chunk(size_t size)
 	{
-		chunk_t *ptr = memory_free;
+		chunk_t *ptr = head_free;
 
 		while(ptr != NULL){
 			if((ptr->size_status & size_mask) >= size){
@@ -408,7 +410,7 @@ static void print_memory()
 		block_ptr = block_ptr->next;
 	}
 
-	chunk_t *chunk_ptr = memory_free;
+	chunk_t *chunk_ptr = head_free;
 	while(chunk_ptr != NULL){
 		void *original_ptr = chunk_ptr;
 		for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
@@ -448,7 +450,7 @@ int main(int argc, char const *argv[])
 		if(WARN) printf("Iteration n° %d\n", i);
 
 		// choix de la taille
-		size = rand_a_b(1,3000);
+		size = rand_a_b(1,1000);
 
 		// Soit malloc, realloc, calloc 
 		if(rand_a_b(0,2) == 0){
@@ -475,7 +477,7 @@ int main(int argc, char const *argv[])
 
 		if(rand_a_b(0,5) == 0){
 			used_memory -= size*sizeof(int);
-			size = rand_a_b(1,3000);
+			size = rand_a_b(1,1000);
 			if(WARN) printf("\tRealloc de %zu octets\n", size*sizeof(int));
 			// realloc
 			start = rdtsc();
