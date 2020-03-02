@@ -85,6 +85,11 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 ////////////////////////////////////////////////////////////////////////////
 
+static size_t next_mod_8(size_t size)
+{
+	return ((size+7) & (-8));
+}
+
 // ajout d'un chunk libre
 static inline void add_free_chunk(chunk_t *chunk)
 {
@@ -175,17 +180,15 @@ static void del_block(block_t *block)
 // permet d'allouer un chunk
 static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
 {
-  if(chunk != NULL && (chunk->size_status >> 63) == 0 && size <= chunk->size_status){
     if(chunk->size_status - size <= sizeof(chunk_t)){
-      chunk->size_status |= status_mask;
+      chunk->size_status += status_mask;
 
       del_free_chunk(chunk);
 
       return chunk;
     }else{
       chunk->size_status -= size + sizeof(chunk_t);
-      void *new_address = (void*)chunk + chunk->size_status + sizeof(chunk_t);
-      chunk_t *new_chunk = new_address;
+      chunk_t *new_chunk = (void*)chunk + chunk->size_status + sizeof(chunk_t);
       new_chunk->next = chunk->next;
 
       if(chunk->next != NULL){
@@ -199,36 +202,33 @@ static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
 
       return new_chunk;
     }
-  }
 
-  return NULL;
+    return NULL;
 }
 
 // permet de liberer un chunk 
 static void free_chunk(chunk_t *chunk)
 {
-  if(chunk != NULL && chunk->size_status >> 63 != 0){
-    chunk->size_status &= size_mask;
+  chunk->size_status &= size_mask;
 
-    if(chunk->previous != NULL && chunk->previous->size_status >> 63 == 0){
-      del_free_chunk(chunk->previous);
+  if(chunk->previous != NULL && chunk->previous->size_status >> 63 == 0){
+    del_free_chunk(chunk->previous);
 
-      chunk->previous->next = chunk->next;
-      if(chunk->next != NULL){
-        chunk->next->previous = chunk->previous;}
-      chunk->previous->size_status += (chunk->size_status + sizeof(chunk_t));
-      chunk = chunk->previous;
+   chunk->previous->next = chunk->next;
+    if(chunk->next != NULL){
+      chunk->next->previous = chunk->previous;}
+    chunk->previous->size_status += (chunk->size_status + sizeof(chunk_t));
+    chunk = chunk->previous;
+  }
+
+   if(chunk->next != NULL && chunk->next->size_status >> 63 == 0){
+    del_free_chunk(chunk->next);
+
+   if(chunk->next->next != NULL){
+      chunk->next->next->previous = chunk;
     }
-
-    if(chunk->next != NULL && chunk->next->size_status >> 63 == 0){
-      del_free_chunk(chunk->next);
-
-      if(chunk->next->next != NULL){
-        chunk->next->next->previous = chunk;
-      }
-      chunk->size_status += chunk->next->size_status + sizeof(chunk_t);
-      chunk->next = chunk->next->next;
-    }
+    chunk->size_status += chunk->next->size_status + sizeof(chunk_t);
+    chunk->next = chunk->next->next;
   }
 
   if(chunk->previous == NULL && chunk->next == NULL){
@@ -300,6 +300,8 @@ void *my_malloc(size_t size)
 {
   pthread_mutex_lock(&mutex);
 
+  size = next_mod_8(size);
+
   chunk_t *ptr = search_chunk(size);
 
   if(ptr != NULL){
@@ -334,6 +336,8 @@ void *my_calloc(size_t nmemb, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
+  size = next_mod_8(size);
+
   void *adr = my_malloc(nmemb*size);
 
   adr = memset(adr, 0, nmemb*size);
@@ -350,6 +354,8 @@ void *my_realloc(void *ptr, size_t size)
   chunk_t *old_chunk = ptr - sizeof(chunk_t);
 
   size_t old_size = old_chunk->size_status & size_mask;
+
+  size = next_mod_8(size);
 
   void *new_ptr = my_malloc(size);
 
@@ -390,7 +396,7 @@ static void print_memory()
 		chunk_t *chunk_ptr = block_ptr->stack;
 		while(chunk_ptr != NULL){
 			void *original_ptr = chunk_ptr;
-			for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=512){
+			for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
 				if(chunk_ptr->size_status & status_mask){
 					fprintf(f_alloc, "%zu %p\n ", instant, ptr);
 				}else{
@@ -405,7 +411,7 @@ static void print_memory()
 	chunk_t *chunk_ptr = memory_free;
 	while(chunk_ptr != NULL){
 		void *original_ptr = chunk_ptr;
-		for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=512){
+		for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
 			fprintf(f_list_free, "%zu %p\n ", instant, ptr);
 		}	
 
