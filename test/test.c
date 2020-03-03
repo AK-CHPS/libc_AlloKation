@@ -18,6 +18,14 @@
 	#define WARN 1
 #endif
 
+#ifndef PERSO
+	#define PERSO 1
+#endif
+
+#ifndef M
+	#define M 1000
+#endif
+
 ////////////////////////////////////////////////////////////////////////////
 
 // mask pour obtenir le status
@@ -61,6 +69,10 @@ struct chunk_t
 	#define SIZE_MIN_BLOCK (128*1024)
 #endif
 
+#ifndef MIN_RESIDUAL_SIZE
+	#define MIN_RESIDUAL_SIZE 500000000
+#endif
+
 // strategie d'allocation
 #define BEST_FIT 1
 #define WORST_FIT 2
@@ -77,6 +89,9 @@ static chunk_t *memory_free = NULL;
 // compteur de mémoire alloué
 static size_t allocated_memory = 0;
 
+// compteur de block alloué
+static size_t block_cpt = 0;
+
 // min macro
 #define min(a,b) ((a < b) ? a : b)
 
@@ -90,9 +105,18 @@ static size_t next_mod_8(size_t size)
 	return ((size+7) & (-8));
 }
 
+static size_t roundTo(size_t value, size_t roundTo)
+{
+    return (value + (roundTo - 1)) & ~(roundTo - 1);
+}
+
 // ajout d'un chunk libre
 static inline void add_free_chunk(chunk_t *chunk)
 {
+	if((u_int64_t)chunk % 8 != 0){
+		printf("PAS ALLIGNE\n");
+	}
+
 	if(memory_free != NULL){
 		memory_free->previous_free = chunk;}
 
@@ -120,7 +144,11 @@ static block_t * add_block(size_t size)
 {
   // allocation de la mémoire
   void *ptr = mmap(0, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  
+ 
+  if((u_int64_t)ptr % 8 != 0){
+	printf("PAS ALLIGNE\n");
+  }
+
   // ajout de allocated memory
   allocated_memory += size;
 
@@ -152,6 +180,8 @@ static block_t * add_block(size_t size)
 
   add_free_chunk(chunk);
 
+  block_cpt+=block->size;
+
   return ptr;
 }
 
@@ -169,6 +199,8 @@ static void del_block(block_t *block)
   }
 
   allocated_memory -= block->size;
+
+  block_cpt-=block->size;
 
   munmap(block,block->size+sizeof(chunk_t)+sizeof(block_t));
 
@@ -211,7 +243,7 @@ static void free_chunk(chunk_t *chunk)
 {
   chunk->size_status &= size_mask;
 
-  if(chunk->previous != NULL && chunk->previous->size_status >> 63 == 0){
+  if(chunk->previous != NULL && chunk->previous->size_status & status_mask == 0){
     del_free_chunk(chunk->previous);
 
    chunk->previous->next = chunk->next;
@@ -221,7 +253,7 @@ static void free_chunk(chunk_t *chunk)
     chunk = chunk->previous;
   }
 
-   if(chunk->next != NULL && chunk->next->size_status >> 63 == 0){
+   if(chunk->next != NULL && chunk->next->size_status & status_mask == 0){
     del_free_chunk(chunk->next);
 
    if(chunk->next->next != NULL){
@@ -231,9 +263,10 @@ static void free_chunk(chunk_t *chunk)
     chunk->next = chunk->next->next;
   }
 
-  if(chunk->previous == NULL && chunk->next == NULL){
+  if(chunk->previous == NULL && chunk->next == NULL && block_cpt > MIN_RESIDUAL_SIZE){
     del_block(chunk->block);
   }else{
+  	memset(chunk+1,0,chunk->size_status & size_mask);
   	add_free_chunk(chunk);
   }
 
@@ -300,7 +333,7 @@ void *my_malloc(size_t size)
 {
   pthread_mutex_lock(&mutex);
 
-  size = next_mod_8(size);
+  size = roundTo(size,8);
 
   chunk_t *ptr = search_chunk(size);
 
@@ -334,17 +367,15 @@ void my_free(void *ptr)
 
 void *my_calloc(size_t nmemb, size_t size)
 {
-  pthread_mutex_lock(&mutex);
+  	pthread_mutex_lock(&mutex);
+	
+	size_t total_size = roundTo(size*nmemb,8);
+		
+	void *adr = my_malloc(total_size);
 
-  size = next_mod_8(size);
-
-  void *adr = my_malloc(nmemb*size);
-
-  adr = memset(adr, 0, nmemb*size);
-
-  pthread_mutex_unlock(&mutex);
+  	pthread_mutex_unlock(&mutex);
   
-  return adr;
+	return adr;
 }
 
 void *my_realloc(void *ptr, size_t size)
@@ -355,7 +386,7 @@ void *my_realloc(void *ptr, size_t size)
 
   size_t old_size = old_chunk->size_status & size_mask;
 
-  size = next_mod_8(size);
+  size = roundTo(size,8);
 
   void *new_ptr = my_malloc(size);
 
@@ -366,6 +397,22 @@ void *my_realloc(void *ptr, size_t size)
   pthread_mutex_unlock(&mutex);
 
   return new_ptr;
+}
+
+void __attribute__((constructor)) constructor()
+{
+	add_block(SIZE_MIN_BLOCK);
+} 
+
+void __attribute__((destructor)) destructor()
+{
+	block_t *ptr = memory, *old_ptr = NULL;
+
+	while(ptr != NULL){
+		old_ptr = ptr;
+		ptr = ptr->next;
+		del_block(old_ptr);
+	}
 }
 
 size_t rand_a_b(size_t a, size_t b)
@@ -448,14 +495,18 @@ int main(int argc, char const *argv[])
 		if(WARN) printf("Iteration n° %d\n", i);
 
 		// choix de la taille
-		size = rand_a_b(1,3000);
+		size = rand_a_b(1,M);
 
 		// Soit malloc, realloc, calloc 
 		if(rand_a_b(0,2) == 0){
 			if(WARN) printf("\tMalloc de %zu octets\n", size*sizeof(int));
 			// malloc
 			start = rdtsc();
-			tab[i] = my_malloc(sizeof(int)*size);
+			#if PERSO == 1
+				tab[i] = my_malloc(sizeof(int)*size);
+			#else
+				tab[i] = malloc(sizeof(int)*size);
+			#endif
 			stop = rdtsc();
 			malloc_sum += stop - start;
 			malloc_cpt += sizeof(int)*size;
@@ -465,7 +516,11 @@ int main(int argc, char const *argv[])
 			if(WARN) printf("\tCalloc de %zu octets\n", size*sizeof(int));
 			// calloc
 			start = rdtsc();
-			tab[i] = my_calloc(size, sizeof(int));
+			#if PERSO == 1
+				tab[i] = my_calloc(size, sizeof(int));
+			#else
+				tab[i] = calloc(size, sizeof(int));
+			#endif
 			stop = rdtsc();
 			calloc_sum += stop - start;
 			calloc_cpt += sizeof(int)*size;
@@ -475,11 +530,15 @@ int main(int argc, char const *argv[])
 
 		if(rand_a_b(0,5) == 0){
 			used_memory -= size*sizeof(int);
-			size = rand_a_b(1,3000);
+			size = rand_a_b(1,M);
 			if(WARN) printf("\tRealloc de %zu octets\n", size*sizeof(int));
 			// realloc
 			start = rdtsc();
-			tab[i] = my_realloc(tab[i], sizeof(int) * size);
+			#if PERSO == 1
+				tab[i] = my_realloc(tab[i], sizeof(int) * size);
+			#else
+				tab[i] = realloc(tab[i], sizeof(int) * size);
+			#endif
 			stop = rdtsc();
 			realloc_sum += stop - start;
 			realloc_cpt += sizeof(int)*size;
@@ -522,7 +581,11 @@ int main(int argc, char const *argv[])
 			if(WARN) printf("\tFree de %zu octets\n", tab[i][0] * sizeof(int));
 			free_cpt += tab[i][0] * sizeof(int);
 			start = rdtsc();
-			my_free(tab[i]);
+			#if PERSO == 1
+				my_free(tab[i]);
+			#else
+				free(tab[i]);
+			#endif
 			stop = rdtsc();
 			free_sum += stop - start;
 			if(WARN) printf("\tFin Free\n\n");
