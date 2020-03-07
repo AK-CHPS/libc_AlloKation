@@ -2,7 +2,12 @@
 #include <stddef.h>
 //#include <stdio.h>
 
-#define _GNU_SOURCE
+#ifdef linux
+  #define _GNU_SOURCE
+  #define HAVE_MREMAP 1
+#else
+  #define HAVE_MREMAP 0
+#endif
 
 ///////////////////////////////////////////////////////////////////////////
 
@@ -31,17 +36,11 @@
 #define SIZE_MASK 0x3fffffffffffffff
 
 #ifndef SIZE_MIN_BLOCK
-  #define SIZE_MIN_BLOCK (128*1024)
+   #define SIZE_MIN_BLOCK (128*1024) // 32 * PAGE_SIZE ?
 #endif
 
 #ifndef MIN_RESIDUAL_SIZE
-  #define MIN_RESIDUAL_SIZE 500000000
-#endif
-
-#ifdef linux
-  #define HAVE_MREMAP 1
-#else
-  #define HAVE_MREMAP 0
+   #define MIN_RESIDUAL_SIZE 500000000 // 32 * PAGE_SIZE * PAGE_SIZE = 500Mo
 #endif
 
 #define _get_size(X)  (X->size_status & SIZE_MASK)
@@ -102,33 +101,34 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 ////////////////////////////////////////////////////////////////////////////
 
-// permet d'arrondir au multiple de roundTo supperieur
+// permet d'arrondir au multiple de roundTo superieur
 static inline size_t roundTo(size_t value, size_t roundTo)
 {
     return (value + (roundTo - 1)) & ~(roundTo - 1);
 }
 
 // permet d'initialiser ou de modifier un block
-static inline void set_block( block_t *block,       \
-                size_t new_size,                    \
-                chunk_t *new_stack,                 \
-                block_t* new_previous,              \
-                block_t *new_next                   )
+static inline void set_block(block_t *block,            \
+			     size_t   new_size,	        \
+			     chunk_t *new_stack,        \
+			     block_t* new_previous,     \
+			     block_t *new_next          )
 {
   block->size = new_size;
   block->stack = new_stack;
   block->previous = new_previous;
   block->next = new_next;
+  return NULL;
 }
 
 //permet d'initialiser ou de modifier un chunk
-static inline void set_chunk( chunk_t *chunk,       \
-                size_t new_size_status,             \
-                chunk_t *new_previous,              \
-                chunk_t *new_next,                  \
-                chunk_t *new_previous_free,         \
-                chunk_t *new_next_free,             \
-                block_t *new_block                  )
+static inline void set_chunk(chunk_t *chunk,            \
+			     size_t   new_size_status,	\
+			     chunk_t *new_previous,	\
+			     chunk_t *new_next,		\
+			     chunk_t *new_previous_free,\
+			     chunk_t *new_next_free,	\
+			     block_t *new_block         )
 {
   chunk->size_status = new_size_status;
   chunk->previous = new_previous;
@@ -136,6 +136,7 @@ static inline void set_chunk( chunk_t *chunk,       \
   chunk->previous_free = new_previous_free;
   chunk->next_free = new_next_free;
   chunk->block = new_block;
+  return NULL;
 }
 
 
@@ -165,7 +166,8 @@ static inline void add_free_chunk(chunk_t *chunk)
   
         current->next_free = chunk; 
         chunk->previous_free = current; 
-    } 
+    }
+    return NULL;
 }
 
 // suppression d'un chunk libre
@@ -183,13 +185,14 @@ static inline void del_free_chunk(chunk_t *chunk)
   if(chunk->previous_free != NULL){
     chunk->previous_free->next_free = chunk->next_free;
   }
+  return NULL;
 }
 
 // permet d'ajouter un block a la liste
-static block_t * add_block(size_t size)
+static block_t *add_block(size_t size)
 {
   // allocation de la mémoire
-  void *ptr = mmap(0, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void *ptr = mmap(NULL, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
   // ajout de allocated memory
   allocated_memory += size;
@@ -233,17 +236,17 @@ static void del_block(block_t *block)
 
   allocated_memory -= block->size;
 
-  block_cpt-=block->size;
+  block_cpt -= block->size;
 
-  munmap(block,block->size+sizeof(chunk_t)+sizeof(block_t));
+  munmap(block, block->size+sizeof(chunk_t)+sizeof(block_t));
 
-  return ;
+  return NULL;
 }
 
 ////////////////////////////////////////////////////////////////////////////
 
 // permet d'allouer un chunk
-static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
+static chunk_t *alloc_chunk(chunk_t *chunk, size_t size)
 {
     del_free_chunk(chunk);
  
@@ -299,11 +302,11 @@ static void free_chunk(chunk_t *chunk)
   add_free_chunk(chunk);
   }
 
-  return;
+  return NULL;
 }
 
 //recherche un chunk libre suffisament grand pour contenir la quantité de mémoire demandé
-static inline chunk_t* search_chunk(size_t size, char clean)
+static inline chunk_t *search_chunk(size_t size, char clean)
 {
   chunk_t *to_return = NULL, *ptr = memory_free_head;
   size_t chunk_size = 0xFFFFFFFFFFFFFFFF;
@@ -461,7 +464,7 @@ void *reAlloK(void *ptr, size_t size)
 void __attribute__((constructor)) constructor()
 {
   add_block(SIZE_MIN_BLOCK);
-} 
+} // return NULL; ?
 
 void __attribute__((destructor)) destructor()
 {
@@ -472,4 +475,4 @@ void __attribute__((destructor)) destructor()
     ptr = ptr->next;
     del_block(old_ptr);
   }
-}
+} // return NULL; ?
