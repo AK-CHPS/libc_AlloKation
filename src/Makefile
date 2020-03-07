@@ -1,4 +1,4 @@
-.DEFAULT_GOAL := default
+lib_test.DEFAULT_GOAL := default
 
 default: lib 
 
@@ -14,5 +14,5 @@ uninstall:
 	rm -f /usr/local/include/libmAlloK.h
 
 installcheck: ../lib_test.c
-	gcc -O3 -o ../lib_test ../lib_test.c -I/usr/local/include/ -L/usr/local/lib/ -lmAlloK
+	gcc -O3 -o ../lib_test ../lib_test.c -L/usr/local/lib/ -I/usr/local/include/  -lmAlloK
 	echo | ../lib_test
