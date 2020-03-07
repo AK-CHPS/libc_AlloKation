@@ -9,7 +9,18 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <limits.h>
 
+
+#define PAGE_SIZE sysconf(_SC_PAGESIZE)
+
+#define WORD_SIZE __WORDSIZE/8
+
+#define STATUS_MASK 0x8000000000000000
+
+#define DIRTY_MASK 0x4000000000000000
+
+#define SIZE_MASK 0x3fffffffffffffff
 
 #define NEW_VERSION
 #ifndef N
@@ -28,14 +39,27 @@
 	#define M 1000
 #endif
 
-////////////////////////////////////////////////////////////////////////////
+#ifndef SIZE_MIN_BLOCK
+	#define SIZE_MIN_BLOCK (128*1024)
+#endif
 
-// mask pour obtenir le status
-static const size_t status_mask = 0x8000000000000000;
-// mask pour le dirty bit
-static const size_t dirty_mask = 0x4000000000000000;
-// mask pour obtenir la taille
-static const size_t size_mask = 0x3fffffffffffffff;
+#ifndef MIN_RESIDUAL_SIZE
+	#define MIN_RESIDUAL_SIZE 500000000
+#endif
+
+#ifdef linux
+	#define HAVE_MREMAP 1
+#else
+	#define HAVE_MREMAP 0
+#endif
+
+#define _get_size(X)	(X->size_status & SIZE_MASK)
+
+#define _get_status(X)	(X->size_status & STATUS_MASK)
+
+#define _get_dirty(X)	(X->size_status & DIRTY_MASK)
+
+////////////////////////////////////////////////////////////////////////////
 
 // structure d'un block
 typedef struct block_t block_t;
@@ -68,20 +92,12 @@ struct chunk_t
   block_t *block;				// pointeur vers le block du chunk
 };
 
-// taille minimum d'un mmap
-#ifndef SIZE_MIN_BLOCK
-	#define SIZE_MIN_BLOCK (128*1024)
-#endif
-
-#ifndef MIN_RESIDUAL_SIZE
-	#define MIN_RESIDUAL_SIZE 500000000
-#endif
-
 // liste de block représentant la mémoire
 static block_t *memory = NULL;
 
 // liste de chunk représentant la mémoire libre
 static chunk_t *memory_free_head = NULL;
+
 static chunk_t *memory_free_tail = NULL;
 
 // quantité de mémoire allouée
@@ -89,9 +105,6 @@ static size_t allocated_memory = 0;
 
 // quantité de mémoire alloué dans les block
 static size_t block_cpt = 0;
-
-// min macro
-#define min(a,b) ((a < b) ? a : b)
 
 // initialisation mutex
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -104,28 +117,56 @@ size_t rand_a_b(size_t a, size_t b)
 }
 
 // permet d'arrondir au multiple de roundTo supperieur
-static size_t roundTo(size_t value, size_t roundTo)
+static inline size_t roundTo(size_t value, size_t roundTo)
 {
     return (value + (roundTo - 1)) & ~(roundTo - 1);
 }
 
+// permet d'initialiser ou de modifier un block
+static inline void set_block(	block_t *block, 			\
+								size_t new_size, 			\
+								chunk_t *new_stack, 		\
+								block_t* new_previous, 		\
+								block_t *new_next 			)
+{
+	block->size = new_size;
+	block->stack = new_stack;
+	block->previous = new_previous;
+	block->next = new_next;
+}
+
+//permet d'initialiser ou de modifier un chunk
+static inline void set_chunk(	chunk_t *chunk,				\
+								size_t new_size_status,		\
+								chunk_t *new_previous,		\
+								chunk_t *new_next,			\
+								chunk_t *new_previous_free, \
+								chunk_t *new_next_free,		\
+								block_t *new_block			)
+{
+	chunk->size_status = new_size_status;
+	chunk->previous = new_previous;
+	chunk->next = new_next;
+	chunk->previous_free = new_previous_free;
+	chunk->next_free = new_next_free;
+	chunk->block = new_block;
+}
+
+
 // ajout d'un chunk libre
 static inline void add_free_chunk(chunk_t *chunk)
 {
-	if((u_int64_t)chunk % 8 != 0)
-		printf("PAS ALLIGNE\n");
-
     if(memory_free_head == NULL){
         memory_free_head = chunk; 
         memory_free_tail = chunk;                    
-    }else if((memory_free_head->size_status & size_mask) >= (chunk->size_status & size_mask)) { 
+    }else if( _get_size(memory_free_head) >= _get_size(chunk)) { 
         chunk->next_free = memory_free_head;
         memory_free_head->previous_free = chunk;
         memory_free_head = chunk;
     }else{
         chunk_t *current = memory_free_head; 
 
-        while(current->next_free != NULL && (current->next_free->size_status & size_mask) < (chunk->size_status & size_mask)){ 
+        while(current->next_free != NULL && _get_size(current->next_free) < _get_size(chunk)){ 
             current = current->next_free;}
   
         chunk->next_free = current->next_free; 
@@ -163,39 +204,26 @@ static block_t * add_block(size_t size)
 {
   // allocation de la mémoire
   void *ptr = mmap(0, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
- 
-  if((u_int64_t)ptr % 4096 != 0){
-	printf("PAS ALLIGNE\n");
-  }
 
   // ajout de allocated memory
   allocated_memory += size;
 
   // cast en chunk et en block
   block_t *block = ptr;
-  chunk_t *chunk = ptr+sizeof(block_t);
+  chunk_t *chunk = ptr + sizeof(block_t);
 
   // initialisation du block
-  block->size = size;
-  block->next = memory;
-  block->previous = NULL;
-
-  block->stack = chunk;
+  set_block(block, size, chunk, NULL, memory);
 
   memory = block;
   
-  // si la liste est pas vid
+  // si la liste est pas vide
   if(block->next != NULL){
     block->next->previous = block;
   }
 
   // initialisation du premier chunk
-  chunk->size_status = size;
-  chunk->previous_free = NULL;
-  chunk->next_free = NULL;
-  chunk->next = NULL;
-  chunk->previous = NULL;
-  chunk->block = block;
+  set_chunk(chunk, size, NULL, NULL, NULL, NULL, block);
 
   add_free_chunk(chunk);
 
@@ -233,27 +261,20 @@ static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
 {
     del_free_chunk(chunk);
  
-    if(chunk->size_status - size <= sizeof(chunk_t)){
-      chunk->size_status += status_mask;
-      chunk->size_status |= dirty_mask;
+    if(_get_size(chunk) - size <= sizeof(chunk_t)){
+      chunk->size_status |= STATUS_MASK;
+      chunk->size_status |= DIRTY_MASK;
     }else{
       chunk_t *new_chunk = (void*)chunk + size + sizeof(chunk_t);
 
       if(chunk->next != NULL){
       	chunk->next->previous = new_chunk;}
-      new_chunk->next = chunk->next;
-      chunk->next = new_chunk;
-      new_chunk->previous = chunk;
 
-      new_chunk->size_status = (chunk->size_status & size_mask) - (size + sizeof(chunk_t));
-      chunk->size_status = size;
-      chunk->size_status |= status_mask;
-      chunk->size_status |= dirty_mask;
-      new_chunk->block = chunk->block;
-      new_chunk->next_free = NULL;
-      new_chunk->previous_free = NULL;
+    set_chunk(new_chunk, _get_size(chunk) - (size + sizeof(chunk_t)), chunk, chunk->next, NULL, NULL, chunk->block);
 
-      add_free_chunk(new_chunk); 
+    add_free_chunk(new_chunk); 
+
+    set_chunk(chunk, size | STATUS_MASK | DIRTY_MASK, chunk->previous, new_chunk, chunk->previous_free, chunk->next_free, chunk->block);
     }
 
     return chunk;
@@ -262,27 +283,27 @@ static chunk_t * alloc_chunk(chunk_t * chunk, size_t size)
 // permet de liberer un chunk 
 static void free_chunk(chunk_t *chunk)
 {
-  chunk->size_status &= size_mask;
+  chunk->size_status &= SIZE_MASK + DIRTY_MASK;
 
-  if(chunk->previous != NULL && chunk->previous->size_status & status_mask == 0){
+  if(chunk->previous != NULL && _get_status(chunk->previous) == 0){
     del_free_chunk(chunk->previous);
 
    chunk->previous->next = chunk->next;
     if(chunk->next != NULL){
       chunk->next->previous = chunk->previous;}
-    chunk->previous->size_status += (chunk->size_status & size_mask) + sizeof(chunk_t);
-    chunk->previous->size_status |= (chunk->size_status & dirty_mask);
+    chunk->previous->size_status +=  _get_size(chunk) + sizeof(chunk_t);
+    chunk->previous->size_status |= _get_dirty(chunk);
     chunk = chunk->previous;
   }
 
-   if(chunk->next != NULL && chunk->next->size_status & status_mask == 0){
+   if(chunk->next != NULL &&  _get_status(chunk->next) == 0){
     del_free_chunk(chunk->next);
 
    if(chunk->next->next != NULL){
       chunk->next->next->previous = chunk;
     }
-    chunk->size_status += (chunk->next->size_status & size_mask) + sizeof(chunk_t);
-    chunk->size_status |= (chunk->next->size_status & dirty_mask);
+    chunk->size_status += _get_size(chunk->next) + sizeof(chunk_t);
+    chunk->size_status |= _get_dirty(chunk->next);
     chunk->next = chunk->next->next;
   }
 
@@ -301,15 +322,13 @@ static inline chunk_t* search_chunk(size_t size, char clean)
 	chunk_t *to_return = NULL, *ptr = memory_free_head;
 	size_t chunk_size = 0xFFFFFFFFFFFFFFFF;
 
-	if(memory_free_tail == NULL || (memory_free_tail != NULL && (memory_free_tail->size_status & size_mask) < size))
+	if(memory_free_tail == NULL || (memory_free_tail != NULL && _get_size(memory_free_tail) < size))
 		return NULL;
 
 	while(ptr != NULL){
-		if(((clean == 1 && (ptr->size_status & dirty_mask) == 0) || clean == 0) && \
-		  	(ptr->size_status & size_mask) < chunk_size && \
-		  	(ptr->size_status & size_mask) >= size){
+		if(((clean == 1 && _get_dirty(ptr) == 0) || clean == 0) && _get_size(ptr) < chunk_size && _get_size(ptr) >= size){
 				to_return = ptr;
-				chunk_size = (ptr->size_status & size_mask);}
+				chunk_size = _get_size(ptr);}
 		ptr = ptr->next_free;
 	}
 
@@ -322,7 +341,7 @@ void *my_malloc(size_t size)
 {
   pthread_mutex_lock(&mutex);
 
-  size = roundTo(size,8);
+  size = roundTo(size,WORD_SIZE);
 
   chunk_t *ptr = search_chunk(size, 0);
 
@@ -358,7 +377,7 @@ void *my_calloc(size_t nmemb, size_t size)
 {
   	pthread_mutex_lock(&mutex);
 	
-	size_t total_size = roundTo(size*nmemb,8);
+	size_t total_size = roundTo(size*nmemb,WORD_SIZE);
 
  	chunk_t *ptr = search_chunk(total_size, 1);
 
@@ -385,31 +404,31 @@ void *my_realloc(void *ptr, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
-  size = roundTo(size,8);
+  size = roundTo(size,WORD_SIZE);
 
   chunk_t *old_chunk = ptr - sizeof(chunk_t);
 
-  size_t old_size = old_chunk->size_status & size_mask;
+  size_t old_size = _get_size(old_chunk);
 
   	if(size < old_size){
 	  	if(old_size - size < SIZE_MIN_BLOCK){
 	  		return ptr;
 	  	}else{
-	  		old_chunk->size_status -= status_mask;
+	  		old_chunk->size_status &= DIRTY_MASK + SIZE_MASK;
 	  		add_free_chunk(old_chunk);
 	  		return alloc_chunk(old_chunk,size)+1;
 	  	}
-  	}else if(old_chunk->next != NULL && (old_chunk->size_status & status_mask) == 0 && \
-  	(old_chunk->size_status & size_mask) + (old_chunk->next->size_status & size_mask) + sizeof(chunk_t) >= size){
+  	}else if(old_chunk->next != NULL && _get_status(old_chunk) == 0 && \
+  	 		_get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) >= size){
 	  	del_free_chunk(old_chunk->next);
 	  		
 	  	if(old_chunk->next->next != NULL){
 	  		old_chunk->next->previous = old_chunk;}
 	  	old_chunk->next = old_chunk->next->next;
-	  	old_chunk->size_status += (old_chunk->next->size_status & size_mask) + sizeof(chunk_t);
+	  	old_chunk->size_status += _get_size(old_chunk->next) + sizeof(chunk_t);
 	  		
 	  	return ptr;
-  	}else if(old_chunk->previous == NULL && old_chunk->next == NULL){
+  	}else if(old_chunk->previous == NULL && old_chunk->next == NULL && HAVE_MREMAP){
   		void *old_addr = ptr-sizeof(chunk_t)-sizeof(block_t);
 
   		void *new_addr = mremap(old_addr, old_size + sizeof(block_t) + sizeof(chunk_t), size + sizeof(chunk_t) + sizeof(block_t), MREMAP_MAYMOVE);
@@ -431,7 +450,8 @@ void *my_realloc(void *ptr, size_t size)
   		}
 
   		chunk_t *new_chunk = new_addr + sizeof(block_t);
-  		new_chunk->size_status = size + status_mask + dirty_mask;
+
+  		new_chunk->size_status = size | STATUS_MASK | DIRTY_MASK;
   		new_chunk->next = new_chunk->previous = NULL;
   		new_chunk->next_free = new_chunk->previous_free = NULL;
   		new_chunk->block = new_block;
@@ -492,8 +512,8 @@ static void print_memory()
 		while(chunk_ptr != NULL){
 			void *original_ptr = chunk_ptr;
 			
-			for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
-				if(chunk_ptr->size_status & status_mask){
+			for(void* ptr = chunk_ptr; ptr < (original_ptr + sizeof(chunk_t)+ _get_size(chunk_ptr)); ptr+=1024){
+				if(_get_status(chunk_ptr)){
 					fprintf(f_alloc, "%zu %p\n ", instant, ptr);
 				}else{
 					fprintf(f_free, "%zu %p\n ", instant, ptr);
@@ -508,7 +528,7 @@ static void print_memory()
 	chunk_t *chunk_ptr = memory_free_head;
 	while(chunk_ptr != NULL){
 		void *original_ptr = chunk_ptr;
-		for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
+		for(void* ptr = chunk_ptr; ptr < (original_ptr + sizeof(chunk_t) + _get_size(chunk_ptr)); ptr+=1024){
 			fprintf(f_list_free, "%zu %p\n ", instant, ptr);
 		}	
 
@@ -529,6 +549,9 @@ int main(int argc, char const *argv[])
 	remove("dat/allocated_memory.dat");
 	remove("dat/free_memory.dat");
 	remove("dat/free_list_memory.dat");
+
+	printf("%ld\n", PAGE_SIZE);
+	printf("%d\n", WORD_SIZE);
 
 	size_t size = 0;
 	u_int64_t start = 0, stop = 0;
@@ -664,7 +687,7 @@ int main(int argc, char const *argv[])
 			(double) read_cpt/read_sum);	
 
 
-	//system("gnuplot plot.sh");
+	system("gnuplot plot.sh");
 
 	return 0;
 }
