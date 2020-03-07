@@ -300,29 +300,27 @@ static void free_chunk(chunk_t *chunk)
   if(chunk->previous == NULL && chunk->next == NULL && block_cpt > MIN_RESIDUAL_SIZE){
     del_block(chunk->block);
   }else{
-  add_free_chunk(chunk);
+    add_free_chunk(chunk);
   }
 
   return ;
 }
 
 //recherche un chunk libre suffisament grand pour contenir la quantité de mémoire demandé
-static inline chunk_t *search_chunk(size_t size, char clean)
+static inline chunk_t* search_chunk(size_t size, char clean)
 {
-  chunk_t *to_return = NULL, *ptr = memory_free_head;
-  size_t chunk_size = 0xFFFFFFFFFFFFFFFF;
+  chunk_t *ptr = memory_free_head;
 
   if(memory_free_tail == NULL || (memory_free_tail != NULL && _get_size(memory_free_tail) < size))
     return NULL;
 
   while(ptr != NULL){
-    if(((clean == 1 && _get_dirty(ptr) == 0) || clean == 0) && _get_size(ptr) < chunk_size && _get_size(ptr) >= size){
-        to_return = ptr;
-        chunk_size = _get_size(ptr);}
+    if(((clean == 1 && _get_dirty(ptr) == 0) || clean == 0) &&  _get_size(ptr) >= size){
+      return ptr;}
     ptr = ptr->next_free;
   }
 
-  return to_return;
+  return NULL;
 }
 
 ////////////////////////////////////////////////////////////////////////////
