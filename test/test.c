@@ -1,6 +1,6 @@
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/mman.h>
 #include <assert.h>
 #include <string.h>
 #include <math.h>
@@ -8,6 +8,8 @@
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <sys/mman.h>
+
 
 #define NEW_VERSION
 #ifndef N
@@ -162,7 +164,7 @@ static block_t * add_block(size_t size)
   // allocation de la mémoire
   void *ptr = mmap(0, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
  
-  if((u_int64_t)ptr % 1024 != 0){
+  if((u_int64_t)ptr % 4096 != 0){
 	printf("PAS ALLIGNE\n");
   }
 
@@ -407,6 +409,34 @@ void *my_realloc(void *ptr, size_t size)
 	  	old_chunk->size_status += (old_chunk->next->size_status & size_mask) + sizeof(chunk_t);
 	  		
 	  	return ptr;
+  	}else if(old_chunk->previous == NULL && old_chunk->next == NULL){
+  		void *old_addr = ptr-sizeof(chunk_t)-sizeof(block_t);
+
+  		void *new_addr = mremap(old_addr, old_size + sizeof(block_t) + sizeof(chunk_t), size + sizeof(chunk_t) + sizeof(block_t), MREMAP_MAYMOVE);
+
+  		assert(new_addr != NULL);
+
+  		block_t *new_block = new_addr;
+  		new_block->size = size;
+  		new_block->stack = new_addr + sizeof(block_t);
+
+  		if(new_block->previous != NULL){
+  			new_block->previous->next = new_addr;
+  		}
+  		if(new_block->next != NULL){
+  			new_block->next->previous = new_addr;
+  		}
+  		if(old_addr == memory){
+  			memory = new_addr;
+  		}
+
+  		chunk_t *new_chunk = new_addr + sizeof(block_t);
+  		new_chunk->size_status = size + status_mask + dirty_mask;
+  		new_chunk->next = new_chunk->previous = NULL;
+  		new_chunk->next_free = new_chunk->previous_free = NULL;
+  		new_chunk->block = new_block;
+
+  		return new_addr + sizeof(block_t) + sizeof(chunk_t);
   	}else{
 		void *new_ptr = my_malloc(size);
 
@@ -461,13 +491,15 @@ static void print_memory()
 		chunk_t *chunk_ptr = block_ptr->stack;
 		while(chunk_ptr != NULL){
 			void *original_ptr = chunk_ptr;
+			
 			for(void* ptr = chunk_ptr; ptr < (original_ptr+sizeof(chunk_t)+(chunk_ptr->size_status & size_mask)); ptr+=1024){
 				if(chunk_ptr->size_status & status_mask){
 					fprintf(f_alloc, "%zu %p\n ", instant, ptr);
 				}else{
 					fprintf(f_free, "%zu %p\n ", instant, ptr);
 				}
-			}
+
+			}	
 			chunk_ptr = chunk_ptr->next;
 		}
 		block_ptr = block_ptr->next;
@@ -513,7 +545,7 @@ int main(int argc, char const *argv[])
 		if(WARN) printf("Iteration n° %d\n", i);
 
 		// choix de la taille
-		size = rand_a_b(1,M);
+		size = rand_a_b(M-(0.4*M),M+(0.4*M));
 
 		// Soit malloc, realloc, calloc 
 		if(rand_a_b(0,2) == 0){
@@ -548,7 +580,7 @@ int main(int argc, char const *argv[])
 
 		if(rand_a_b(0,5) == 0){
 			used_memory -= size*sizeof(int);
-			size = rand_a_b(1,M);
+			size = rand_a_b(M-(0.4*M),M+(0.4*M));
 			if(WARN) printf("\tRealloc de %zu octets\n", size*sizeof(int));
 			// realloc
 			start = rdtsc();
@@ -587,7 +619,7 @@ int main(int argc, char const *argv[])
 				stop = rdtsc();
 				write_sum += stop - start;
 				write_cpt+= sizeof(int);
-			} 
+			}
 		}
 
 		size = tab[i][0];
@@ -606,8 +638,6 @@ int main(int argc, char const *argv[])
 		#endif
 	}
 
-	size_t final_allocated_memory = allocated_memory;
-
 	// liberation de la memoire
 	for(int i = 0; i < N; i++){
 		if(tab[i] != NULL){
@@ -625,7 +655,6 @@ int main(int argc, char const *argv[])
 		}
 	}
 
-	printf("Malloc\t\tCalloc\t\tRealloc\t\tFree\t\tWrite\t\tRead en octets/cycle\n");
 	printf("%lf\t%lf\t%lf\t%lf\t%lf\t%lf\n",														\
 			(double) malloc_cpt/malloc_sum, 														\
 			(double) calloc_cpt/calloc_sum,															\
@@ -634,13 +663,8 @@ int main(int argc, char const *argv[])
 			(double) write_cpt/write_sum,															\
 			(double) read_cpt/read_sum);	
 
-	printf("Allocated memory = %zu bytes\n", final_allocated_memory);
-	printf("Used memory = %zu bytes\n", used_memory);
-	printf("Ratio = %lf \n", (double)used_memory/final_allocated_memory);
 
-	#if PERSO == 1
-		system("gnuplot plot.sh");
-	#endif
+	//system("gnuplot plot.sh");
 
 	return 0;
 }
