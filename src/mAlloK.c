@@ -36,7 +36,7 @@
 #define SIZE_MASK 0x3fffffffffffffff
 
 #ifndef SIZE_MIN_BLOCK
-   #define SIZE_MIN_BLOCK (128*1024) // 32 * PAGE_SIZE ?
+   #define SIZE_MIN_BLOCK (32 * PAGE_SIZE) // 32 * PAGE_SIZE ?
 #endif
 
 #ifndef MIN_RESIDUAL_SIZE
@@ -57,7 +57,7 @@ typedef struct block_t block_t;
 // structure d'un chunk
 typedef struct chunk_t chunk_t;
 
-// structre d'un block
+// structure d'un block
 struct block_t
 {
   size_t size;                // taille du block
@@ -118,7 +118,8 @@ static inline void set_block(block_t *block,            \
   block->stack = new_stack;
   block->previous = new_previous;
   block->next = new_next;
-  return NULL;
+
+  return ;
 }
 
 //permet d'initialiser ou de modifier un chunk
@@ -136,7 +137,8 @@ static inline void set_chunk(chunk_t *chunk,            \
   chunk->previous_free = new_previous_free;
   chunk->next_free = new_next_free;
   chunk->block = new_block;
-  return NULL;
+
+  return;
 }
 
 
@@ -167,7 +169,8 @@ static inline void add_free_chunk(chunk_t *chunk)
         current->next_free = chunk; 
         chunk->previous_free = current; 
     }
-    return NULL;
+
+    return ;
 }
 
 // suppression d'un chunk libre
@@ -185,7 +188,8 @@ static inline void del_free_chunk(chunk_t *chunk)
   if(chunk->previous_free != NULL){
     chunk->previous_free->next_free = chunk->next_free;
   }
-  return NULL;
+
+  return ;
 }
 
 // permet d'ajouter un block a la liste
@@ -193,9 +197,6 @@ static block_t *add_block(size_t size)
 {
   // allocation de la mémoire
   void *ptr = mmap(NULL, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-  // ajout de allocated memory
-  allocated_memory += size;
 
   // cast en chunk et en block
   block_t *block = ptr;
@@ -216,6 +217,7 @@ static block_t *add_block(size_t size)
 
   add_free_chunk(chunk);
 
+  // ajoue de la mémoire au compteur
   block_cpt+=block->size;
 
   return ptr;
@@ -234,13 +236,12 @@ static void del_block(block_t *block)
     block->next->previous = block->previous;
   }
 
-  allocated_memory -= block->size;
-
+  // supression de la mémoire au compteur
   block_cpt -= block->size;
 
   munmap(block, block->size+sizeof(chunk_t)+sizeof(block_t));
 
-  return NULL;
+  return ;
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -302,7 +303,7 @@ static void free_chunk(chunk_t *chunk)
   add_free_chunk(chunk);
   }
 
-  return NULL;
+  return ;
 }
 
 //recherche un chunk libre suffisament grand pour contenir la quantité de mémoire demandé
@@ -417,36 +418,46 @@ void *reAlloK(void *ptr, size_t size)
       old_chunk->size_status += _get_size(old_chunk->next) + sizeof(chunk_t);
         
       return ptr;
-    }else if(old_chunk->previous == NULL && old_chunk->next == NULL && HAVE_MREMAP){
-      void *old_addr = ptr-sizeof(chunk_t)-sizeof(block_t);
+    }
 
-      void *new_addr = mremap(old_addr, old_size + sizeof(block_t) + sizeof(chunk_t), size + sizeof(chunk_t) + sizeof(block_t), MREMAP_MAYMOVE);
+    #if HAVE_MREMAP
 
-      assert(new_addr != NULL);
+      else if(old_chunk->previous == NULL && old_chunk->next == NULL && HAVE_MREMAP){
+        void *old_addr = ptr-sizeof(chunk_t)-sizeof(block_t);
 
-      block_t *new_block = new_addr;
-      new_block->size = size;
-      new_block->stack = new_addr + sizeof(block_t);
+        block_cpt -= old_size;
 
-      if(new_block->previous != NULL){
-        new_block->previous->next = new_addr;
+        void *new_addr = mremap(old_addr, old_size + sizeof(block_t) + sizeof(chunk_t), size + sizeof(chunk_t) + sizeof(block_t), MREMAP_MAYMOVE);
+
+        block_cpt += size;
+
+        block_t *new_block = new_addr;
+        new_block->size = size;
+        new_block->stack = new_addr + sizeof(block_t);
+
+        if(new_block->previous != NULL){
+          new_block->previous->next = new_addr;
+        }
+        if(new_block->next != NULL){
+          new_block->next->previous = new_addr;
+        }
+        if(old_addr == memory){
+          memory = new_addr;
+        }
+
+        chunk_t *new_chunk = new_addr + sizeof(block_t);
+
+        new_chunk->size_status = size | STATUS_MASK | DIRTY_MASK;
+        new_chunk->next = new_chunk->previous = NULL;
+        new_chunk->next_free = new_chunk->previous_free = NULL;
+        new_chunk->block = new_block;
+
+        return new_addr + sizeof(block_t) + sizeof(chunk_t);
       }
-      if(new_block->next != NULL){
-        new_block->next->previous = new_addr;
-      }
-      if(old_addr == memory){
-        memory = new_addr;
-      }
 
-      chunk_t *new_chunk = new_addr + sizeof(block_t);
+    #endif
 
-      new_chunk->size_status = size | STATUS_MASK | DIRTY_MASK;
-      new_chunk->next = new_chunk->previous = NULL;
-      new_chunk->next_free = new_chunk->previous_free = NULL;
-      new_chunk->block = new_block;
-
-      return new_addr + sizeof(block_t) + sizeof(chunk_t);
-    }else{
+    else{
     void *new_ptr = mAlloK(size);
 
     memcpy(new_ptr, ptr, old_size);
