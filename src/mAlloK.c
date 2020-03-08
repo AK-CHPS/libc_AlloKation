@@ -249,23 +249,23 @@ static void del_block(block_t *block)
 // permet d'allouer un chunk
 static chunk_t *alloc_chunk(chunk_t *chunk, size_t size)
 {
-    del_free_chunk(chunk);
+  del_free_chunk(chunk);
  
-    if(_get_size(chunk) - size <= sizeof(chunk_t)){
-      chunk->size_status |= STATUS_MASK;
-      chunk->size_status |= DIRTY_MASK;
-    }else{
-      chunk_t *new_chunk = (void*)chunk + size + sizeof(chunk_t);
+  if(_get_size(chunk) - size <= sizeof(chunk_t)){
+    chunk->size_status |= STATUS_MASK;
+    chunk->size_status |= DIRTY_MASK;
+  }else{
+    chunk_t *new_chunk = (void*)chunk + size + sizeof(chunk_t);
 
-      if(chunk->next != NULL){
-        chunk->next->previous = new_chunk;}
+    if(chunk->next != NULL){
+      chunk->next->previous = new_chunk;}
 
-    set_chunk(new_chunk, _get_size(chunk) - (size + sizeof(chunk_t)), chunk, chunk->next, NULL, NULL, chunk->block);
+  set_chunk(new_chunk, _get_size(chunk) - (size + sizeof(chunk_t)) | _get_dirty(chunk), chunk, chunk->next, NULL, NULL, chunk->block);
 
-    add_free_chunk(new_chunk); 
+  add_free_chunk(new_chunk); 
 
-    set_chunk(chunk, size | STATUS_MASK | DIRTY_MASK, chunk->previous, new_chunk, chunk->previous_free, chunk->next_free, chunk->block);
-    }
+  set_chunk(chunk, size | STATUS_MASK | DIRTY_MASK, chunk->previous, new_chunk, chunk->previous_free, chunk->next_free, chunk->block);
+  }
 
     return chunk;
 }
@@ -273,7 +273,7 @@ static chunk_t *alloc_chunk(chunk_t *chunk, size_t size)
 // permet de liberer un chunk 
 static void free_chunk(chunk_t *chunk)
 {
-  chunk->size_status &= SIZE_MASK + DIRTY_MASK;
+  chunk->size_status &= SIZE_MASK;
 
   if(chunk->previous != NULL && _get_status(chunk->previous) == 0){
     del_free_chunk(chunk->previous);
@@ -282,7 +282,6 @@ static void free_chunk(chunk_t *chunk)
     if(chunk->next != NULL){
       chunk->next->previous = chunk->previous;}
     chunk->previous->size_status +=  _get_size(chunk) + sizeof(chunk_t);
-    chunk->previous->size_status |= _get_dirty(chunk);
     chunk = chunk->previous;
   }
 
@@ -293,9 +292,10 @@ static void free_chunk(chunk_t *chunk)
       chunk->next->next->previous = chunk;
     }
     chunk->size_status += _get_size(chunk->next) + sizeof(chunk_t);
-    chunk->size_status |= _get_dirty(chunk->next);
     chunk->next = chunk->next->next;
   }
+
+  chunk->size_status |= DIRTY_MASK;
 
   if(chunk->previous == NULL && chunk->next == NULL && block_cpt > MIN_RESIDUAL_SIZE){
     del_block(chunk->block);
@@ -331,6 +331,9 @@ void *mAlloK(size_t size)
 
   size = roundTo(size,WORD_SIZE);
 
+  if(size == 0){
+    return NULL;}
+
   chunk_t *ptr = search_chunk(size, 0);
 
   if(ptr != NULL){
@@ -364,7 +367,10 @@ void freeAK(void *ptr)
 void *cAlloK(size_t nmemb, size_t size)
 {
   pthread_mutex_lock(&mutex);
-  
+
+  if(size == 0){
+    return NULL;}
+
   size_t total_size = roundTo(size*nmemb,WORD_SIZE);
 
   chunk_t *ptr = search_chunk(total_size, 1);
@@ -392,6 +398,9 @@ void *reAlloK(void *ptr, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
+  if(size == 0){
+    return NULL;}
+
   size = roundTo(size,WORD_SIZE);
 
   chunk_t *old_chunk = ptr - sizeof(chunk_t);
@@ -404,18 +413,20 @@ void *reAlloK(void *ptr, size_t size)
       }else{
         old_chunk->size_status &= DIRTY_MASK + SIZE_MASK;
         add_free_chunk(old_chunk);
+
         return alloc_chunk(old_chunk,size)+1;
       }
-    }else if(old_chunk->next != NULL && _get_status(old_chunk) == 0 && \
-        _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) >= size){
+    }else if(old_chunk->next != NULL && _get_status(old_chunk->next) == 0 && \
+          _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) >= size){
       del_free_chunk(old_chunk->next);
-        
+
       if(old_chunk->next->next != NULL){
         old_chunk->next->previous = old_chunk;}
+
+      old_chunk->size_status = _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) + _get_dirty(old_chunk->next);
       old_chunk->next = old_chunk->next->next;
-      old_chunk->size_status += _get_size(old_chunk->next) + sizeof(chunk_t);
-        
-      return ptr;
+
+      return alloc_chunk(old_chunk,size)+1;
     }
 
     #if HAVE_MREMAP
@@ -456,13 +467,13 @@ void *reAlloK(void *ptr, size_t size)
     #endif
 
     else{
-    void *new_ptr = mAlloK(size);
+      void *new_ptr = mAlloK(size);
 
-    memcpy(new_ptr, ptr, old_size);
+      memcpy(new_ptr, ptr, size);
     
-    free_chunk(old_chunk);
+      free_chunk(old_chunk);
 
-    return new_ptr;
+      return new_ptr;
     }
 
     pthread_mutex_unlock(&mutex);
@@ -470,10 +481,42 @@ void *reAlloK(void *ptr, size_t size)
   return NULL;
 }
 
+void print_memory(const char *allocated_file, const char *free_file)
+{
+  static size_t instant = 0;
+
+  FILE *f_alloc = fopen(allocated_file,"a");
+  FILE *f_free = fopen(free_file,"a");
+
+  block_t *block_ptr = memory;
+  while(block_ptr != NULL){
+    chunk_t *chunk_ptr = block_ptr->stack;
+    while(chunk_ptr != NULL){
+      void *original_ptr = chunk_ptr;
+      
+      for(void* ptr = chunk_ptr; ptr < (original_ptr + sizeof(chunk_t)+ _get_size(chunk_ptr)); ptr+=1024){
+        if(_get_status(chunk_ptr)){
+          fprintf(f_alloc, "%zu %p\n ", instant, ptr);
+        }else{
+          fprintf(f_free, "%zu %p\n ", instant, ptr);
+        }
+
+      } 
+      chunk_ptr = chunk_ptr->next;
+    }
+    block_ptr = block_ptr->next;
+  }
+
+  fclose(f_free);
+  fclose(f_alloc);
+
+  instant++;
+}
+
 void __attribute__((constructor)) constructor()
 {
   add_block(SIZE_MIN_BLOCK);
-} // return NULL; ?
+}
 
 void __attribute__((destructor)) destructor()
 {
@@ -484,4 +527,4 @@ void __attribute__((destructor)) destructor()
     ptr = ptr->next;
     del_block(old_ptr);
   }
-} // return NULL; ?
+}
