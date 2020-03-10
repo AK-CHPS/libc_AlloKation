@@ -483,13 +483,13 @@ void *realloc(void *ptr, size_t size)
     #endif
 
     else{
+      pthread_mutex_unlock(&mutex);
       void *new_ptr = malloc(size);
 
       memcpy(new_ptr, ptr, old_size);
     
       free_chunk(old_chunk);
 
-      pthread_mutex_unlock(&mutex);
       return new_ptr;
     }
 
