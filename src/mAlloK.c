@@ -49,6 +49,8 @@
 
 #define _get_dirty(X) (X->size_status & DIRTY_MASK)
 
+#define min(a, b) ((a < b)? a: b)
+
 ////////////////////////////////////////////////////////////////////////////
 
 // structure d'un block
@@ -338,8 +340,10 @@ void *malloc(size_t size)
   chunk_t *ptr = search_chunk(size, 0);
 
   if(ptr != NULL){
+    void* adr = alloc_chunk(ptr, size)+1;
+
     pthread_mutex_unlock(&mutex);
-    return alloc_chunk(ptr, size)+1;
+    return adr;
   }else{
     block_t *block;
 
@@ -349,8 +353,11 @@ void *malloc(size_t size)
       block = add_block(size);
     }
 
+    void *adr = alloc_chunk(block->stack, size)+1;
+
     pthread_mutex_unlock(&mutex);
-    return alloc_chunk(block->stack, size)+1;
+
+    return adr;
   }
 
   pthread_mutex_unlock(&mutex);
@@ -362,7 +369,9 @@ void free(void *ptr)
 {
   pthread_mutex_lock(&mutex);
 
-  free_chunk(ptr-sizeof(chunk_t));
+  if(ptr != NULL){
+    free_chunk(ptr-sizeof(chunk_t));
+  }
 
   pthread_mutex_unlock(&mutex);
 }
@@ -371,7 +380,7 @@ void *calloc(size_t nmemb, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
-  if(size == 0){
+  if(size == 0){    
     pthread_mutex_unlock(&mutex);
     return NULL;}
 
@@ -380,8 +389,10 @@ void *calloc(size_t nmemb, size_t size)
   chunk_t *ptr = search_chunk(total_size, 1);
 
   if(ptr != NULL){
+    void *adr = alloc_chunk(ptr, total_size)+1;
+
     pthread_mutex_unlock(&mutex);
-    return alloc_chunk(ptr, total_size)+1;
+    return adr;
   }else{
       block_t *block;
 
@@ -391,8 +402,11 @@ void *calloc(size_t nmemb, size_t size)
         block = add_block(total_size);
       }
 
+      void *adr = alloc_chunk(block->stack, total_size)+1;
+
       pthread_mutex_unlock(&mutex);
-      return alloc_chunk(block->stack, total_size)+1;
+      
+      return adr;
   }
 
     pthread_mutex_unlock(&mutex);
@@ -404,8 +418,14 @@ void *realloc(void *ptr, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
+  if(ptr == NULL){
+    pthread_mutex_unlock(&mutex);
+    return malloc(size);
+  }
+
   if(size == 0){
     pthread_mutex_unlock(&mutex);
+    free(ptr);
     return NULL;}
 
   size = roundTo(size,WORD_SIZE);
@@ -530,18 +550,27 @@ void print_memory(const char *allocated_file, const char *free_file)
   instant++;
 }
 
+/*
 void __attribute__((constructor)) constructor()
 {
+  printf("entree constructor\n");
+
   add_block(SIZE_MIN_BLOCK);
+
+  printf("sortie constructor\n");
 }
 
 void __attribute__((destructor)) destructor()
 {
+  printf("entree destructor\n");
   block_t *ptr = memory, *old_ptr = NULL;
 
   while(ptr != NULL){
     old_ptr = ptr;
     ptr = ptr->next;
-    del_block(old_ptr);
+    fprintf(stderr, "%p\n", old_ptr);
+    //del_block(old_ptr);
   }
+  printf("sortie destructor\n");
 }
+*/
