@@ -1,4 +1,4 @@
-//#include "mAlloK.h"
+//#include "malloc.h"
 #include <stddef.h>
 //#include <stdio.h>
 
@@ -325,7 +325,7 @@ static inline chunk_t* search_chunk(size_t size, char clean)
 
 ////////////////////////////////////////////////////////////////////////////
 
-void *mAlloK(size_t size)
+void *malloc(size_t size)
 {
   pthread_mutex_lock(&mutex);
 
@@ -355,7 +355,7 @@ void *mAlloK(size_t size)
   return NULL;
 }
 
-void freeAK(void *ptr)
+void free(void *ptr)
 {
   pthread_mutex_lock(&mutex);
 
@@ -364,7 +364,7 @@ void freeAK(void *ptr)
   pthread_mutex_unlock(&mutex);
 }
 
-void *cAlloK(size_t nmemb, size_t size)
+void *calloc(size_t nmemb, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
@@ -394,7 +394,7 @@ void *cAlloK(size_t nmemb, size_t size)
   return NULL;
 }
 
-void *reAlloK(void *ptr, size_t size)
+void *realloc(void *ptr, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
@@ -471,7 +471,7 @@ void *reAlloK(void *ptr, size_t size)
     #endif
 
     else{
-      void *new_ptr = mAlloK(size);
+      void *new_ptr = malloc(size);
 
       memcpy(new_ptr, ptr, old_size);
     
@@ -517,18 +517,18 @@ void print_memory(const char *allocated_file, const char *free_file)
   instant++;
 }
 
-void __attribute__((constructor)) constructor()
-{
-  add_block(SIZE_MIN_BLOCK);
-}
+/* void __attribute__((constructor)) constructor() */
+/* { */
+/*   add_block(SIZE_MIN_BLOCK); */
+/* } */
 
-void __attribute__((destructor)) destructor()
-{
-  block_t *ptr = memory, *old_ptr = NULL;
+/* void __attribute__((destructor)) destructor() */
+/* { */
+/*   block_t *ptr = memory, *old_ptr = NULL; */
 
-  while(ptr != NULL){
-    old_ptr = ptr;
-    ptr = ptr->next;
-    del_block(old_ptr);
-  }
-}
+/*   while(ptr != NULL){ */
+/*     old_ptr = ptr; */
+/*     ptr = ptr->next; */
+/*     del_block(old_ptr); */
+/*   } */
+/* } */
