@@ -530,18 +530,18 @@ void print_memory(const char *allocated_file, const char *free_file)
   instant++;
 }
 
-/* void __attribute__((constructor)) constructor() */
-/* { */
-/*   add_block(SIZE_MIN_BLOCK); */
-/* } */
+void __attribute__((constructor)) constructor()
+{
+  add_block(SIZE_MIN_BLOCK);
+}
 
-/* void __attribute__((destructor)) destructor() */
-/* { */
-/*   block_t *ptr = memory, *old_ptr = NULL; */
+void __attribute__((destructor)) destructor()
+{
+  block_t *ptr = memory, *old_ptr = NULL;
 
-/*   while(ptr != NULL){ */
-/*     old_ptr = ptr; */
-/*     ptr = ptr->next; */
-/*     del_block(old_ptr); */
-/*   } */
-/* } */
+  while(ptr != NULL){
+    old_ptr = ptr;
+    ptr = ptr->next;
+    del_block(old_ptr);
+  }
+}

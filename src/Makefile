@@ -3,7 +3,7 @@ lib_test.DEFAULT_GOAL := default
 default: lib 
 
 lib: mAlloK.c
-	gcc -O3 -fPIC -shared -o libmAlloK.so mAlloK.c -lm
+	gcc -O3 -fPIC -shared -o libmAlloK.so mAlloK.c -lm -lpthread
 
 install: uninstall libmAlloK.so libmAlloK.h
 	cp libmAlloK.so /usr/local/lib/
