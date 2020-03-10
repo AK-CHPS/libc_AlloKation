@@ -332,11 +332,13 @@ void *mAlloK(size_t size)
   size = roundTo(size,WORD_SIZE);
 
   if(size == 0){
+    pthread_mutex_unlock(&mutex);
     return NULL;}
 
   chunk_t *ptr = search_chunk(size, 0);
 
   if(ptr != NULL){
+    pthread_mutex_unlock(&mutex);
     return alloc_chunk(ptr, size)+1;
   }else{
     block_t *block;
@@ -347,6 +349,7 @@ void *mAlloK(size_t size)
       block = add_block(size);
     }
 
+    pthread_mutex_unlock(&mutex);
     return alloc_chunk(block->stack, size)+1;
   }
 
@@ -369,6 +372,7 @@ void *cAlloK(size_t nmemb, size_t size)
   pthread_mutex_lock(&mutex);
 
   if(size == 0){
+    pthread_mutex_unlock(&mutex);
     return NULL;}
 
   size_t total_size = roundTo(size*nmemb,WORD_SIZE);
@@ -376,6 +380,7 @@ void *cAlloK(size_t nmemb, size_t size)
   chunk_t *ptr = search_chunk(total_size, 1);
 
   if(ptr != NULL){
+    pthread_mutex_unlock(&mutex);
     return alloc_chunk(ptr, total_size)+1;
   }else{
       block_t *block;
@@ -386,6 +391,7 @@ void *cAlloK(size_t nmemb, size_t size)
         block = add_block(total_size);
       }
 
+      pthread_mutex_unlock(&mutex);
       return alloc_chunk(block->stack, total_size)+1;
   }
 
@@ -399,6 +405,7 @@ void *reAlloK(void *ptr, size_t size)
   pthread_mutex_lock(&mutex);
 
   if(size == 0){
+    pthread_mutex_unlock(&mutex);
     return NULL;}
 
   size = roundTo(size,WORD_SIZE);
@@ -409,11 +416,14 @@ void *reAlloK(void *ptr, size_t size)
 
     if(size < old_size){
       if(old_size - size < SIZE_MIN_BLOCK){
+
+        pthread_mutex_unlock(&mutex);
         return ptr;
       }else{
         old_chunk->size_status &= DIRTY_MASK + SIZE_MASK;
         add_free_chunk(old_chunk);
 
+        pthread_mutex_unlock(&mutex);
         return alloc_chunk(old_chunk,size)+1;
       }
     }else if(old_chunk->next != NULL && _get_status(old_chunk->next) == 0 && \
@@ -430,6 +440,7 @@ void *reAlloK(void *ptr, size_t size)
 
       add_free_chunk(old_chunk);
 
+      pthread_mutex_unlock(&mutex);
       return alloc_chunk(old_chunk,size)+1;
     }
 
@@ -465,6 +476,7 @@ void *reAlloK(void *ptr, size_t size)
         new_chunk->next_free = new_chunk->previous_free = NULL;
         new_chunk->block = new_block;
 
+        pthread_mutex_unlock(&mutex);
         return new_addr + sizeof(block_t) + sizeof(chunk_t);
       }
 
@@ -477,6 +489,7 @@ void *reAlloK(void *ptr, size_t size)
     
       free_chunk(old_chunk);
 
+      pthread_mutex_unlock(&mutex);
       return new_ptr;
     }
 
