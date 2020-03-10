@@ -284,8 +284,8 @@ static void free_chunk(chunk_t *chunk)
     chunk->previous->size_status +=  _get_size(chunk) + sizeof(chunk_t);
     chunk = chunk->previous;
   }
-
-   if(chunk->next != NULL &&  _get_status(chunk->next) == 0){
+ 
+  if(chunk->next != NULL &&  _get_status(chunk->next) == 0){
     del_free_chunk(chunk->next);
 
    if(chunk->next->next != NULL){
@@ -418,13 +418,17 @@ void *reAlloK(void *ptr, size_t size)
       }
     }else if(old_chunk->next != NULL && _get_status(old_chunk->next) == 0 && \
           _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) >= size){
+
       del_free_chunk(old_chunk->next);
 
       if(old_chunk->next->next != NULL){
-        old_chunk->next->previous = old_chunk;}
+        old_chunk->next->next->previous = old_chunk;}
 
-      old_chunk->size_status = _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) + _get_dirty(old_chunk->next);
+      old_chunk->size_status = _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t);
+      old_chunk->size_status |= _get_dirty(old_chunk->next);
       old_chunk->next = old_chunk->next->next;
+
+      add_free_chunk(old_chunk);
 
       return alloc_chunk(old_chunk,size)+1;
     }
@@ -469,7 +473,7 @@ void *reAlloK(void *ptr, size_t size)
     else{
       void *new_ptr = mAlloK(size);
 
-      memcpy(new_ptr, ptr, size);
+      memcpy(new_ptr, ptr, old_size);
     
       free_chunk(old_chunk);
 
