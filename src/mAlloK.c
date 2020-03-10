@@ -501,30 +501,3 @@ void print_memory(const char *allocated_file, const char *free_file)
 
   instant++;
 }
-
-void __attribute__((constructor)) constructor()
-{
-  pthread_mutex_lock(&mutex);
-  fprintf(stderr, "entree constructor\n");
-
-  add_block(mmap_block(SIZE_MIN_BLOCK),SIZE_MIN_BLOCK);
-
-  fprintf(stderr, "sortie constructor\n");
-  pthread_mutex_unlock(&mutex);
-}
-
-void __attribute__((destructor)) destructor()
-{
-  pthread_mutex_lock(&mutex);
-  fprintf(stderr, "entree destructor\n");
-  block_t *ptr = memory, *old_ptr = NULL;
-
-  while(ptr->next != NULL){
-    old_ptr = ptr;
-    ptr = ptr->next;
-    del_block(old_ptr);
-    munmap_block(old_ptr);
-  }
-  fprintf(stderr, "sortie destructor\n");
-  pthread_mutex_unlock(&mutex);
-}
