@@ -1,7 +1,3 @@
-#ifdef AK
-	#include <libmAlloK.h>
-#endif
-
 #ifndef N
 	#define N 1000
 #endif
@@ -10,13 +6,7 @@
 	#define M 10000
 #endif
 
-#ifndef PRINT 
-	#define PRINT 0
-#endif
-
-#ifndef AK
-	#include <stdlib.h>
-#endif
+#include <stdlib.h>
 
 #ifndef WARN
 	#define WARN 0
@@ -26,10 +16,14 @@
 #include <time.h>
 #include <math.h>
 
-
+#define min(a, b) ((a < b) ? a : b)
 
 size_t rand_a_b(size_t a, size_t b)
 {
+	if(a == b){
+		return a;
+	}
+
 	return rand()%(b-a)+a;
 }
 
@@ -43,11 +37,14 @@ static inline u_int64_t rdtsc (void)
   return (d << 32) | a;
 }
 
+
 int main(int argc, char const *argv[])
 {
 	srand(time(NULL));
 
-	size_t size = 0;
+	int *tab[N] = {};
+	size_t size_tab[N] = {};
+	size_t size = 0, new_size = 0;
 	u_int64_t start = 0, stop = 0;
 	u_int64_t malloc_sum = 0, malloc_cpt = 0;
 	u_int64_t calloc_sum = 0, calloc_cpt = 0;
@@ -55,133 +52,91 @@ int main(int argc, char const *argv[])
 	u_int64_t free_sum = 0, free_cpt = 0;
 	u_int64_t write_sum = 0, write_cpt = 0;
 	u_int64_t read_sum = 0, read_cpt = 0;
-	size_t used_memory = 0;
-	int *tab[N] = {};
-	char flag_alloc = 0;
 
 	for(int i = 0; i < N; i++){
-		if(WARN) printf("Iteration n° %d\n", i);
+		size = rand_a_b(1,M);
+		size_tab[i] = size;
 
-		// choix de la taille
-		size = rand_a_b(M-(0.4*M),M+(0.4*M));
-
-		// Soit malloc, realloc, calloc 
 		if(rand_a_b(0,2) == 0){
-			// malloc
-			if(WARN) printf("\tMalloc de %zu octets\n", size*sizeof(int));
-
 			start = rdtsc();
-			tab[i] = malloc(sizeof(int)*size);
+			tab[i] = malloc(sizeof(int) * size);
 			stop = rdtsc();
 			
 			malloc_sum += stop - start;
-			malloc_cpt += sizeof(int)*size;
-			
-			if(WARN) printf("\tFin Malloc\n\n");
-			
-			flag_alloc = 0;
+			malloc_cpt += sizeof(int) * size;
+		
+			for(int z = 0; z < size; z++){
+				tab[i][z] = z;}
 		}else{
-			// calloc
-			if(WARN) printf("\tCalloc de %zu octets\n", size*sizeof(int));
-			
 			start = rdtsc();
 			tab[i] = calloc(size, sizeof(int));
 			stop = rdtsc();
 			
 			calloc_sum += stop - start;
-			calloc_cpt += sizeof(int)*size;
-			
-			if(WARN) printf("\tFin Calloc\n\n");
-			flag_alloc = 1;
+			calloc_cpt += sizeof(int) * size;
 		}
 
-		if(flag_alloc){
-			// verification du calloc
-			for(int z = 0; z < size; z++){
-				if(tab[i][z] != 0){
-					printf("\tErreur Calloc case n°%d\n", z);
-				}
+		if(rand_a_b(0,5) == 0){
+			new_size = rand_a_b(1,M);
+			int j = rand_a_b(0,i);
+			if(tab[j] != NULL){
+				start = rdtsc();
+				tab[j] = realloc(tab[j], sizeof(int) * new_size);
+				stop = rdtsc();
+			
+				realloc_sum += stop - start;
+				realloc_cpt += sizeof(int) * new_size;
+
+				size_tab[j] = new_size;
 			}
 		}
 
 		if(rand_a_b(0,5) == 0){
-			// realloc
-			size = rand_a_b(M-(0.4*M),M+(0.4*M));
-			if(WARN) printf("\tRealloc de %zu octets\n", size*sizeof(int));
+			int j = rand_a_b(0,i);
+			if(tab[j] != NULL){
+				start = rdtsc();
+				free(tab[j]);
+				stop = rdtsc();
 			
-			start = rdtsc();
-			tab[i] = realloc(tab[i], sizeof(int) * size);
-			stop = rdtsc();
-			
-			realloc_sum += stop - start;
-			realloc_cpt += sizeof(int)*size;
-
-			if(WARN) printf("\tFin Realloc\n\n");
+				tab[j] = NULL;	
+				
+				free_cpt += size_tab[j];
+				free_sum += stop - start;
+			}
 		}
 
-		// taille du tableau dans la premiere case
-		tab[i][0] = size;
+	}
 
-		// ecriture et lecture dans le tableau
-		if(WARN) printf("\tDebut lectures et ecritures\n");
-		int j = 0;
-
-		for(j = 0; j < i; j++){
-			size = tab[j][0];
-			int res = 0;
-			for(int z = 1; z < size; z++){
-				// test de lecture
+	for(int i = 0; i < N; ++i){
+		if(tab[i] != NULL){
+			for(int z = 0; z < size_tab[i]; z++){
 				start = rdtsc();
-				res = tab[j][z];
+				tab[i][z];
 				stop = rdtsc();
 				
 				read_cpt += sizeof(int);
-				read_sum += stop - start;
-				
-				if(res != z){
-					printf("Problème itération %d\n", j);}
-				
-				// test d'ecriture
+				read_sum += stop - start;				
+			
 				start = rdtsc();
-				tab[j][z] = z;
+				tab[i][z] = z;
 				stop = rdtsc();
 				
 				write_sum += stop - start;
 				write_cpt+= sizeof(int);
 			}
 		}
-
-		size = tab[i][0];
-		int res = 0;
-		for(int z = 1; z < size; z++){
-			start = rdtsc();
-			tab[i][z] = z;
-			stop = rdtsc();
-			
-			write_sum += stop - start;
-			write_cpt+= sizeof(int);
-		} 		
-		if(WARN) printf("\tFin lectures et ecritures\n\n");
-
-		#if PRINT && AK
-			print_memory("allocated_memory.dat", "free_memory.dat");
-		#endif
 	}
 
-	// liberation de la memoire
 	for(int i = 0; i < N; i++){
 		if(tab[i] != NULL){
-			if(WARN) printf("\tFree de %zu octets\n", tab[i][0] * sizeof(int));
-			
-			free_cpt += tab[i][0] * sizeof(int);
+			free_cpt += size_tab[i];
 			
 			start = rdtsc();
 			free(tab[i]);
 			stop = rdtsc();
 			
+			tab[i] = NULL;	
 			free_sum += stop - start;
-			
-			if(WARN) printf("\tFin Free\n\n");
 		}
 	}
 
