@@ -35,21 +35,21 @@
 
 #define SIZE_MASK 0x3fffffffffffffff
 
-#ifndef SIZE_MIN_BLOCK
-   #define SIZE_MIN_BLOCK (32 * PAGE_SIZE) // 32 * PAGE_SIZE ?
-#endif
+#define SIZE_MIN_BLOCK (32 * PAGE_SIZE)
 
-#ifndef MIN_RESIDUAL_SIZE
-   #define MIN_RESIDUAL_SIZE 500000000 // 32 * PAGE_SIZE * PAGE_SIZE = 500Mo
-#endif
+#define MIN_RESIDUAL_SIZE 500000000
 
-#define _get_size(X)  (X->size_status & SIZE_MASK)
+#define _get_size(X)    (X->size_status & SIZE_MASK)
 
 #define _get_status(X)  (X->size_status & STATUS_MASK)
 
-#define _get_dirty(X) (X->size_status & DIRTY_MASK)
+#define _get_dirty(X)   (X->size_status & DIRTY_MASK)
 
-#define min(a, b) ((a < b)? a: b)
+#define  min(a, b)      ((a < b)? a: b)
+
+#define  mmap_block(size)    (mmap(NULL, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
+
+#define  munmap_block(block)    (munmap(block, block->size + sizeof(chunk_t) + sizeof(block_t)))
 
 ////////////////////////////////////////////////////////////////////////////
 
@@ -109,6 +109,15 @@ static inline size_t roundTo(size_t value, size_t roundTo)
     return (value + (roundTo - 1)) & ~(roundTo - 1);
 }
 
+// permet de verifier que la mémoire est aligné
+static inline void check(void* ptr)
+{
+  if((size_t)ptr % 8 != 0){
+    fprintf(stderr, "Adresse memoire pas alignee en %zu\n", (size_t)ptr);
+    abort();
+  }
+}
+
 // permet d'initialiser ou de modifier un block
 static inline void set_block(block_t *block,            \
 			     size_t   new_size,	        \
@@ -126,8 +135,8 @@ static inline void set_block(block_t *block,            \
 
 //permet d'initialiser ou de modifier un chunk
 static inline void set_chunk(chunk_t *chunk,            \
-			     size_t   new_size_status,	\
-			     chunk_t *new_previous,	\
+			     size_t   new_size_status,	                  \
+			     chunk_t *new_previous,	                       \
 			     chunk_t *new_next,		\
 			     chunk_t *new_previous_free,\
 			     chunk_t *new_next_free,	\
@@ -171,8 +180,6 @@ static inline void add_free_chunk(chunk_t *chunk)
         current->next_free = chunk; 
         chunk->previous_free = current; 
     }
-
-    return ;
 }
 
 // suppression d'un chunk libre
@@ -190,19 +197,12 @@ static inline void del_free_chunk(chunk_t *chunk)
   if(chunk->previous_free != NULL){
     chunk->previous_free->next_free = chunk->next_free;
   }
-
-  return ;
 }
 
 // permet d'ajouter un block a la liste
-static block_t *add_block(size_t size)
+static block_t *add_block(block_t *block, size_t size)
 {
-  // allocation de la mémoire
-  void *ptr = mmap(NULL, sizeof(block_t) + sizeof(chunk_t) + size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-  // cast en chunk et en block
-  block_t *block = ptr;
-  chunk_t *chunk = ptr + sizeof(block_t);
+  chunk_t *chunk = (void*)block + sizeof(block_t);
 
   // initialisation du block
   set_block(block, size, chunk, NULL, memory);
@@ -222,11 +222,11 @@ static block_t *add_block(size_t size)
   // ajoue de la mémoire au compteur
   block_cpt+=block->size;
 
-  return ptr;
+  return block;
 }
 
 // permet de supprimer un block particulier
-static void del_block(block_t *block)
+static block_t* del_block(block_t *block)
 {
   if(memory == block){
     memory = block->next;
@@ -241,9 +241,7 @@ static void del_block(block_t *block)
   // supression de la mémoire au compteur
   block_cpt -= block->size;
 
-  munmap(block, block->size+sizeof(chunk_t)+sizeof(block_t));
-
-  return ;
+  return block;
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -254,19 +252,18 @@ static chunk_t *alloc_chunk(chunk_t *chunk, size_t size)
   del_free_chunk(chunk);
  
   if(_get_size(chunk) - size <= sizeof(chunk_t)){
-    chunk->size_status |= STATUS_MASK;
-    chunk->size_status |= DIRTY_MASK;
+    chunk->size_status |= STATUS_MASK + DIRTY_MASK;
   }else{
     chunk_t *new_chunk = (void*)chunk + size + sizeof(chunk_t);
 
     if(chunk->next != NULL){
       chunk->next->previous = new_chunk;}
 
-  set_chunk(new_chunk, _get_size(chunk) - (size + sizeof(chunk_t)) | _get_dirty(chunk), chunk, chunk->next, NULL, NULL, chunk->block);
+    set_chunk(new_chunk, _get_size(chunk) - (size + sizeof(chunk_t)) | _get_dirty(chunk), chunk, chunk->next, NULL, NULL, chunk->block);
 
-  add_free_chunk(new_chunk); 
+    add_free_chunk(new_chunk); 
 
-  set_chunk(chunk, size | STATUS_MASK | DIRTY_MASK, chunk->previous, new_chunk, chunk->previous_free, chunk->next_free, chunk->block);
+    set_chunk(chunk, size | STATUS_MASK | DIRTY_MASK, chunk->previous, new_chunk, chunk->previous_free, chunk->next_free, chunk->block);
   }
 
     return chunk;
@@ -301,11 +298,10 @@ static void free_chunk(chunk_t *chunk)
 
   if(chunk->previous == NULL && chunk->next == NULL && block_cpt > MIN_RESIDUAL_SIZE){
     del_block(chunk->block);
+    munmap_block(chunk->block);
   }else{
     add_free_chunk(chunk);
   }
-
-  return ;
 }
 
 //recherche un chunk libre suffisament grand pour contenir la quantité de mémoire demandé
@@ -318,11 +314,12 @@ static inline chunk_t* search_chunk(size_t size, char clean)
 
   while(ptr != NULL){
     if(((clean == 1 && _get_dirty(ptr) == 0) || clean == 0) &&  _get_size(ptr) >= size){
-      return ptr;}
+      break;
+    }
     ptr = ptr->next_free;
   }
 
-  return NULL;
+  return ptr;
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -330,192 +327,148 @@ static inline chunk_t* search_chunk(size_t size, char clean)
 void *malloc(size_t size)
 {
   pthread_mutex_lock(&mutex);
+  fprintf(stderr, "Entree malloc\n");
 
   size = roundTo(size,WORD_SIZE);
 
-  if(size == 0){
-    pthread_mutex_unlock(&mutex);
-    return NULL;}
+  void *to_return = NULL;
 
-  chunk_t *ptr = search_chunk(size, 0);
-
-  if(ptr != NULL){
-    void* adr = alloc_chunk(ptr, size)+1;
-
-    pthread_mutex_unlock(&mutex);
-    return adr;
-  }else{
-    block_t *block;
-
-    if(size < SIZE_MIN_BLOCK){
-      block = add_block(SIZE_MIN_BLOCK);
+  if(size != 0){
+    chunk_t *ptr = search_chunk(size, 0);
+  
+    if(ptr != NULL){
+      to_return = alloc_chunk(ptr, size) + 1;  
     }else{
-      block = add_block(size);
+      block_t *block = (size < SIZE_MIN_BLOCK) ? add_block(mmap_block(SIZE_MIN_BLOCK),SIZE_MIN_BLOCK) : add_block(mmap_block(size),size);
+      to_return = alloc_chunk(block->stack, size) + 1;
     }
-
-    void *adr = alloc_chunk(block->stack, size)+1;
-
-    pthread_mutex_unlock(&mutex);
-
-    return adr;
   }
 
+  fprintf(stderr, "Sortie malloc %zu\n", (size_t)to_return);
   pthread_mutex_unlock(&mutex);
 
-  return NULL;
+  return to_return;
 }
 
 void free(void *ptr)
 {
   pthread_mutex_lock(&mutex);
-
+  fprintf(stderr, "Entree free\n");
+  
   if(ptr != NULL){
     free_chunk(ptr-sizeof(chunk_t));
   }
 
+  fprintf(stderr, "Sortie free %zu\n", (size_t)ptr);
   pthread_mutex_unlock(&mutex);
 }
 
 void *calloc(size_t nmemb, size_t size)
 {
   pthread_mutex_lock(&mutex);
+  fprintf(stderr, "Entree calloc\n");
 
-  if(size == 0){    
-    pthread_mutex_unlock(&mutex);
-    return NULL;}
+  void * to_return = NULL;
 
-  size_t total_size = roundTo(size*nmemb,WORD_SIZE);
+  if(size != 0){
+    size_t total_size = roundTo(size*nmemb,WORD_SIZE);
+    
+    chunk_t *ptr = search_chunk(total_size, 1);
 
-  chunk_t *ptr = search_chunk(total_size, 1);
-
-  if(ptr != NULL){
-    void *adr = alloc_chunk(ptr, total_size)+1;
-
-    pthread_mutex_unlock(&mutex);
-    return adr;
-  }else{
-      block_t *block;
-
-      if(total_size < SIZE_MIN_BLOCK){
-        block = add_block(SIZE_MIN_BLOCK);
-      }else{
-        block = add_block(total_size);
-      }
-
-      void *adr = alloc_chunk(block->stack, total_size)+1;
-
-      pthread_mutex_unlock(&mutex);
-      
-      return adr;
+    if(ptr != NULL){
+      to_return = alloc_chunk(ptr, total_size) + 1;
+    }else{
+      block_t *block = (total_size < SIZE_MIN_BLOCK) ? add_block(mmap_block(SIZE_MIN_BLOCK),SIZE_MIN_BLOCK) : add_block(mmap_block(total_size),total_size);
+      to_return = alloc_chunk(block->stack, total_size) + 1;    
+    } 
   }
 
-    pthread_mutex_unlock(&mutex);
-  
-  return NULL;
+  fprintf(stderr, "Sortie calloc %zu\n", (size_t)to_return);
+  pthread_mutex_unlock(&mutex);
+
+  return to_return;
 }
 
 void *realloc(void *ptr, size_t size)
 {
   pthread_mutex_lock(&mutex);
+  fprintf(stderr, "Entree realloc\n");
 
-  if(ptr == NULL){
-    pthread_mutex_unlock(&mutex);
-    return malloc(size);
-  }
+  void *to_return = NULL;
 
-  if(size == 0){
-    pthread_mutex_unlock(&mutex);
-    free(ptr);
-    return NULL;}
+  if(size != 0){
+    size = roundTo(size,WORD_SIZE);
 
-  size = roundTo(size,WORD_SIZE);
+    if(ptr == NULL){
+      // potentiel bug en multithread
+      pthread_mutex_unlock(&mutex);
+      to_return = malloc(size);
+      pthread_mutex_lock(&mutex);
+    }else{
+      chunk_t *old_chunk = ptr - sizeof(chunk_t);
+      size_t old_size = _get_size(old_chunk);
 
-  chunk_t *old_chunk = ptr - sizeof(chunk_t);
+      if(size < old_size){
+        if(old_size - size < SIZE_MIN_BLOCK){
+          to_return = ptr;
+        }else{
+          old_chunk->size_status &= DIRTY_MASK + SIZE_MASK;
+          add_free_chunk(old_chunk);
+          to_return = alloc_chunk(old_chunk,size) + 1;
+        }
+      }else if(old_chunk->next != NULL && _get_status(old_chunk->next) == 0 &&        \
+            _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) >= size){
+        del_free_chunk(old_chunk->next);
 
-  size_t old_size = _get_size(old_chunk);
+        if(old_chunk->next->next != NULL){
+          old_chunk->next->next->previous = old_chunk;}
 
-    if(size < old_size){
-      if(old_size - size < SIZE_MIN_BLOCK){
+        old_chunk->size_status = _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) + DIRTY_MASK;
+        old_chunk->next = old_chunk->next->next;
 
-        pthread_mutex_unlock(&mutex);
-        return ptr;
-      }else{
-        old_chunk->size_status &= DIRTY_MASK + SIZE_MASK;
         add_free_chunk(old_chunk);
 
-        pthread_mutex_unlock(&mutex);
-        return alloc_chunk(old_chunk,size)+1;
+        to_return = alloc_chunk(old_chunk,size) + 1;
       }
-    }else if(old_chunk->next != NULL && _get_status(old_chunk->next) == 0 && \
-          _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t) >= size){
-
-      del_free_chunk(old_chunk->next);
-
-      if(old_chunk->next->next != NULL){
-        old_chunk->next->next->previous = old_chunk;}
-
-      old_chunk->size_status = _get_size(old_chunk) + _get_size(old_chunk->next) + sizeof(chunk_t);
-      old_chunk->size_status |= _get_dirty(old_chunk->next);
-      old_chunk->next = old_chunk->next->next;
-
-      add_free_chunk(old_chunk);
-
-      pthread_mutex_unlock(&mutex);
-      return alloc_chunk(old_chunk,size)+1;
-    }
-
-    #if HAVE_MREMAP
-
+      #if HAVE_MREMAP
       else if(old_chunk->previous == NULL && old_chunk->next == NULL && HAVE_MREMAP){
-        void *old_addr = ptr-sizeof(chunk_t)-sizeof(block_t);
+        block_cpt += old_size - size;
+        void *old_block_adr = ptr-sizeof(chunk_t)-sizeof(block_t);
+        size_t old_block_size = old_size + sizeof(block_t) + sizeof(chunk_t);
+        size_t new_block_size = size + sizeof(chunk_t) + sizeof(block_t);
 
-        block_cpt -= old_size;
+        del_block(old_block_adr);
 
-        void *new_addr = mremap(old_addr, old_size + sizeof(block_t) + sizeof(chunk_t), size + sizeof(chunk_t) + sizeof(block_t), MREMAP_MAYMOVE);
+        block_t *new_block = add_block(mremap(old_block_adr, old_block_size, new_block_size, MREMAP_MAYMOVE),size);
 
-        block_cpt += size;
+        chunk_t *new_chunk = new_block->stack;
 
-        block_t *new_block = new_addr;
-        new_block->size = size;
-        new_block->stack = new_addr + sizeof(block_t);
+        new_chunk->size_status |= STATUS_MASK + DIRTY_MASK;
 
-        if(new_block->previous != NULL){
-          new_block->previous->next = new_addr;
-        }
-        if(new_block->next != NULL){
-          new_block->next->previous = new_addr;
-        }
-        if(old_addr == memory){
-          memory = new_addr;
-        }
-
-        chunk_t *new_chunk = new_addr + sizeof(block_t);
-
-        new_chunk->size_status = size | STATUS_MASK | DIRTY_MASK;
-        new_chunk->next = new_chunk->previous = NULL;
-        new_chunk->next_free = new_chunk->previous_free = NULL;
-        new_chunk->block = new_block;
-
-        pthread_mutex_unlock(&mutex);
-        return new_addr + sizeof(block_t) + sizeof(chunk_t);
+        to_return = new_chunk + 1;
       }
+      #endif
+      else{
+        // potentiel bug en multithread
+        pthread_mutex_unlock(&mutex);
+        to_return = malloc(size);
+        pthread_mutex_lock(&mutex);
 
-    #endif
+        memcpy(to_return, ptr, size);
 
-    else{
-      pthread_mutex_unlock(&mutex);
-      void *new_ptr = malloc(size);
-
-      memcpy(new_ptr, ptr, old_size);
-    
-      free_chunk(old_chunk);
-
-      return new_ptr;
+        free_chunk(old_chunk);
+      }
     }
+  }else{
+    if(ptr != NULL){
+      free_chunk(ptr-sizeof(chunk_t));
+    }
+  }
 
-    pthread_mutex_unlock(&mutex);
+  fprintf(stderr, "Sortie realloc %zu\n", (size_t)to_return);
+  pthread_mutex_unlock(&mutex);
 
-  return NULL;
+  return to_return;
 }
 
 void print_memory(const char *allocated_file, const char *free_file)
@@ -533,11 +486,10 @@ void print_memory(const char *allocated_file, const char *free_file)
       
       for(void* ptr = chunk_ptr; ptr < (original_ptr + sizeof(chunk_t)+ _get_size(chunk_ptr)); ptr+=1024){
         if(_get_status(chunk_ptr)){
-          fprintf(f_alloc, "%zu %p\n ", instant, ptr);
+          fprintf(f_alloc, "%zu %zu\n ", instant, (size_t)ptr);
         }else{
-          fprintf(f_free, "%zu %p\n ", instant, ptr);
+          fprintf(f_free, "%zu %zu\n ", instant, (size_t)ptr);
         }
-
       } 
       chunk_ptr = chunk_ptr->next;
     }
@@ -549,28 +501,3 @@ void print_memory(const char *allocated_file, const char *free_file)
 
   instant++;
 }
-
-/*
-void __attribute__((constructor)) constructor()
-{
-  printf("entree constructor\n");
-
-  add_block(SIZE_MIN_BLOCK);
-
-  printf("sortie constructor\n");
-}
-
-void __attribute__((destructor)) destructor()
-{
-  printf("entree destructor\n");
-  block_t *ptr = memory, *old_ptr = NULL;
-
-  while(ptr != NULL){
-    old_ptr = ptr;
-    ptr = ptr->next;
-    fprintf(stderr, "%p\n", old_ptr);
-    //del_block(old_ptr);
-  }
-  printf("sortie destructor\n");
-}
-*/
