@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <limits.h>
+#include <dlfcn.h>
 
 ////////////////////////////////////////////////////////////////////////////
 
@@ -35,9 +36,11 @@
 
 #define SIZE_MASK 0x3fffffffffffffff
 
-#define SIZE_MIN_BLOCK (32 * PAGE_SIZE)
+#define SIZE_MIN_BLOCK (1024 * 1024)
 
 #define MIN_RESIDUAL_SIZE 500000000
+
+#define REALLOC_MIN     100 * WORD_SIZE + CHUNK_SIZE
 
 #define CHUNK_SIZE      sizeof(chunk_t)
 
@@ -54,6 +57,28 @@
 #define  mmap_block(size)    (mmap(NULL, BLOCK_SIZE + CHUNK_SIZE + size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
 
 #define  munmap_block(block)    (munmap(block, block->size + CHUNK_SIZE + BLOCK_SIZE))
+
+#define roundTo(value,roundto)  ((value + (roundto - 1)) & ~(roundto - 1))
+
+// permet d'initialiser ou de modifier un block
+#define set_block(block, new_size, new_stack, new_previous, new_next)                                           \
+(                                                                                                               \
+  block->size = new_size,                                                                                       \
+  block->stack = new_stack,                                                                                     \
+  block->previous = new_previous,                                                                               \
+  block->next = new_next                                                                                        \
+)
+
+//permet d'initialiser ou de modifier un chunk
+#define set_chunk(chunk, new_size_status, new_previous, new_next, new_previous_free, new_next_free, new_block)  \
+(                                                                                                               \
+  chunk->size_status = new_size_status,                                                                         \
+  chunk->previous = new_previous,                                                                               \
+  chunk->next = new_next,                                                                                       \
+  chunk->previous_free = new_previous_free,                                                                     \
+  chunk->next_free = new_next_free,                                                                             \
+  chunk->block = new_block                                                                                      \
+)
 
 ////////////////////////////////////////////////////////////////////////////
 
@@ -106,65 +131,6 @@ static size_t block_cpt = 0;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 ////////////////////////////////////////////////////////////////////////////
-
-// permet d'arrondir au multiple de roundTo superieur
-static inline size_t roundTo(size_t value, size_t roundTo)
-{
-    return (value + (roundTo - 1)) & ~(roundTo - 1);
-}
-
-// permet de verifier que la mémoire est aligné
-static inline void check(void* ptr)
-{
-  if((size_t)ptr % 8 != 0){
-    ////fprintf(stderr, "Adresse memoire pas alignee en %zu\n", (size_t)ptr);
-    abort();
-  }
-}
-
-static inline u_int64_t rdtsc (void)
-{
-  //64 bit variables
-  u_int64_t a, d;
-
-  __asm__ volatile ("rdtsc" : "=a" (a), "=d" (d));
-  
-  return (d << 32) | a;
-}
-
-// permet d'initialiser ou de modifier un block
-static inline void set_block(block_t *block,             \
-			     size_t   new_size,	                           \
-			     chunk_t *new_stack,                           \
-			     block_t* new_previous,                        \
-			     block_t *new_next          )
-{
-  block->size = new_size;
-  block->stack = new_stack;
-  block->previous = new_previous;
-  block->next = new_next;
-
-  return ;
-}
-
-//permet d'initialiser ou de modifier un chunk
-static inline void set_chunk(chunk_t *chunk,            \
-			     size_t   new_size_status,	                  \
-			     chunk_t *new_previous,	                      \
-			     chunk_t *new_next,		                        \
-			     chunk_t *new_previous_free,                  \
-			     chunk_t *new_next_free,	                    \
-			     block_t *new_block         )
-{
-  chunk->size_status = new_size_status;
-  chunk->previous = new_previous;
-  chunk->next = new_next;
-  chunk->previous_free = new_previous_free;
-  chunk->next_free = new_next_free;
-  chunk->block = new_block;
-
-  return;
-}
 
 // ajout d'un chunk libre
 static inline void add_free_chunk(chunk_t *chunk)
@@ -330,7 +296,7 @@ static inline chunk_t *alloc_chunk(size_t size, char clean)
     }else{
       del_free_chunk(chunk);
     }
-    if(! (CHUNK_SIZE + size > _get_size(chunk) || (_get_size(chunk) - CHUNK_SIZE - size) < WORD_SIZE)){
+    if(!(CHUNK_SIZE + size > _get_size(chunk) || (_get_size(chunk) - CHUNK_SIZE - size) < WORD_SIZE)){
       add_free_chunk(cut_chunk(chunk,size));
     }
 
@@ -433,7 +399,7 @@ void *realloc(void *ptr, size_t size)
 
 
     if(ptr != NULL && size < old_size){
-      if(old_size - size < SIZE_MIN_BLOCK){
+      if(old_size - size < REALLOC_MIN){
         to_return = ptr;
       }else{
         add_free_chunk(cut_chunk(old_chunk,size));
@@ -444,6 +410,8 @@ void *realloc(void *ptr, size_t size)
       del_free_chunk(old_chunk->next);
 
       merge_w_next(old_chunk);
+
+      add_free_chunk(cut_chunk(old_chunk,size));
       
       to_return = old_chunk + 1;
     }
@@ -458,7 +426,7 @@ void *realloc(void *ptr, size_t size)
 
       block_t *new_block = add_block(mremap(old_block_adr, old_block_size, new_block_size, MREMAP_MAYMOVE),size);
 
-      new_block->stack->size_status |= STATUS_MASK;
+      new_block->stack->size_status = size + DIRTY_MASK + STATUS_MASK;
 
       to_return = new_block->stack + 1;
     }
@@ -477,4 +445,31 @@ void *realloc(void *ptr, size_t size)
   pthread_mutex_unlock(&mutex);
 
   return to_return;
+}
+
+// sauvegarde l'etat de la memoire a cet instant
+void print_memory()
+{
+  static size_t instant = 0;
+
+  block_t *block_ptr = memory;
+  while(block_ptr != NULL){
+    chunk_t *chunk_ptr = block_ptr->stack;
+    while(chunk_ptr != NULL){
+      void *original_ptr = chunk_ptr;
+      for(void* ptr = chunk_ptr; ptr < (original_ptr + CHUNK_SIZE + _get_size(chunk_ptr)); ptr+=1024){
+        if(_get_status(chunk_ptr)){
+          fprintf(stderr, "%zu %p alloc\n ", instant, ptr);
+        }else{
+          fprintf(stderr, "%zu %p free\n ", instant, ptr);
+        }
+      }
+      chunk_ptr = chunk_ptr->next;
+    }
+    block_ptr = block_ptr->next;
+  }
+
+  fprintf(stderr, "\n");
+
+  instant++;
 }
