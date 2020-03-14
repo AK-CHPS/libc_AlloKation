@@ -40,6 +40,8 @@
 
 #define MIN_RESIDUAL_SIZE 500000000
 
+#define LIMIT_CALLOC 512
+
 #define REALLOC_MIN     100 * WORD_SIZE + CHUNK_SIZE
 
 #define CHUNK_SIZE      sizeof(chunk_t)
@@ -59,6 +61,8 @@
 #define  munmap_block(block)    (munmap(block, block->size + CHUNK_SIZE + BLOCK_SIZE))
 
 #define roundTo(value,roundto)  ((value + (roundto - 1)) & ~(roundto - 1))
+
+#define f(X)  ((X < 512) ? (X >> 3) : (log2_fast(X)+55))
 
 // permet d'initialiser ou de modifier un block
 #define set_block(block, new_size, new_stack, new_previous, new_next)                                           \
@@ -116,10 +120,8 @@ struct chunk_t
 // liste de block représentant la mémoire
 static block_t *memory = NULL;
 
-// liste de chunk représentant la mémoire libre
-static chunk_t *memory_free_head = NULL;
-
-static chunk_t *memory_free_tail = NULL;
+// table de hachage
+static chunk_t *table[128] = {};
 
 // quantité de mémoire allouée
 static size_t allocated_memory = 0;
@@ -132,43 +134,39 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 ////////////////////////////////////////////////////////////////////////////
 
+// permet de calculer le log2 de x
+static inline size_t as_size_t(const double x) {
+    return *(size_t*)&x;
+}
+
+// permet de calculer le log2 de x
+static inline size_t log2_fast(const size_t x) {
+    return (size_t)((as_size_t((double)x)>>52))-1023;
+}
+
 // ajout d'un chunk libre
 static inline void add_free_chunk(chunk_t *chunk)
 {
-    if(memory_free_head == NULL){
-        memory_free_head = chunk; 
-        memory_free_tail = chunk;                    
-    }else if( _get_size(memory_free_head) >= _get_size(chunk)) { 
-        chunk->next_free = memory_free_head;
-        memory_free_head->previous_free = chunk;
-        memory_free_head = chunk;
-    }else{
-        chunk_t *current = memory_free_head; 
+  size_t index = f(_get_size(chunk));
 
-        while(current->next_free != NULL && _get_size(current->next_free) < _get_size(chunk)){
-            current = current->next_free;}
-  
-        chunk->next_free = current->next_free; 
+  chunk->next_free = table[index];
 
-        if(current->next_free != NULL) 
-            chunk->next_free->previous_free = chunk; 
+  chunk->previous_free = NULL;
 
-        if(current == memory_free_tail)
-          memory_free_tail = chunk;
-  
-        current->next_free = chunk; 
-        chunk->previous_free = current; 
-    }
+  if(table[index] != NULL){
+    table[index]->previous_free = chunk;
+  }
+
+  table[index] = chunk;
 }
 
 // suppression d'un chunk libre
 static inline void del_free_chunk(chunk_t *chunk)
 {
-  if(memory_free_head == chunk){
-    memory_free_head = chunk->next_free;
-  }
-  if(memory_free_tail == chunk){
-    memory_free_tail = chunk->previous_free;
+  size_t index = f(_get_size(chunk));
+  
+  if(table[index] == chunk){
+    table[index] = chunk->next_free;
   }
   if(chunk->next_free != NULL){
     chunk->next_free->previous_free = chunk->previous_free;
@@ -181,43 +179,41 @@ static inline void del_free_chunk(chunk_t *chunk)
 // coupe un chunk donné en deux et retourne le nouveaux
 static inline chunk_t *cut_chunk(chunk_t *chunk, size_t size)
 {
-    chunk_t *new_chunk = (void*)chunk + size + CHUNK_SIZE;
+  chunk_t *new_chunk = (void*)chunk + size + CHUNK_SIZE;
 
-    if(chunk->next != NULL){
-      chunk->next->previous = new_chunk;}
+  if(chunk->next != NULL){
+    chunk->next->previous = new_chunk;}
 
-    set_chunk(new_chunk, (_get_size(chunk) - CHUNK_SIZE - size) | _get_dirty(chunk), chunk, chunk->next, NULL, NULL, chunk->block);
+  set_chunk(new_chunk, (_get_size(chunk) - CHUNK_SIZE - size) | _get_dirty(chunk), chunk, chunk->next, NULL, NULL, chunk->block);
 
-    set_chunk(chunk, size | STATUS_MASK | _get_dirty(chunk), chunk->previous, new_chunk, NULL, NULL, chunk->block);
+  set_chunk(chunk, size | STATUS_MASK | _get_dirty(chunk), chunk->previous, new_chunk, NULL, NULL, chunk->block);
 
-    return new_chunk;
+  return new_chunk;
 }
 
 // permet de fusionner un chunk avec le chunk precedent
 static inline chunk_t *merge_w_previous(chunk_t *chunk)
 {
-  if(chunk->previous != NULL){
-    chunk->previous->next = chunk->next;
-    if(chunk->next != NULL){
-      chunk->next->previous = chunk->previous;}
-    chunk->previous->size_status +=  (_get_size(chunk) + CHUNK_SIZE);
-  }
+  chunk->previous->next = chunk->next;
+  if(chunk->next != NULL){
+    chunk->next->previous = chunk->previous;}
+
+  chunk->previous->size_status +=  (_get_size(chunk) + CHUNK_SIZE);
+
   return chunk->previous;
 }
 
 // permet de fusionner un chunk avec le chunk suivant
 static inline chunk_t *merge_w_next(chunk_t *chunk)
 {
-  if(chunk->next != NULL){
-   if(chunk->next->next != NULL){
-      chunk->next->next->previous = chunk;
-    }
-    chunk->size_status += (_get_size(chunk->next) + CHUNK_SIZE);
-    chunk->next = chunk->next->next;
-  }
+  if(chunk->next->next != NULL){
+    chunk->next->next->previous = chunk;}
+
+  chunk->size_status += (_get_size(chunk->next) + CHUNK_SIZE);
+  chunk->next = chunk->next->next;
+
   return chunk;
 }
-
 
 // permet d'ajouter un block a la liste
 static inline block_t *add_block(block_t *block, size_t size)
@@ -231,8 +227,7 @@ static inline block_t *add_block(block_t *block, size_t size)
   
   // si la liste est pas vide
   if(block->next != NULL){
-    block->next->previous = block;
-  }
+    block->next->previous = block;}
 
   // initialisation du premier chunk
   set_chunk(chunk, size, NULL, NULL, NULL, NULL, block);
@@ -265,23 +260,24 @@ static inline block_t* del_block(block_t *block)
 //recherche un chunk libre suffisament grand pour contenir la quantité de mémoire demandé
 static inline  chunk_t* search_chunk(size_t size, char clean)
 {
-  chunk_t *ptr = memory_free_head;
+  size_t index = f(size);
 
-  if(memory_free_tail == NULL || (memory_free_tail != NULL && _get_size(memory_free_tail) < size))
-    return NULL;
-
-  while(ptr != NULL){
-    if(((clean == 1 && _get_dirty(ptr) == 0) || clean == 0) &&  _get_size(ptr) >= size){
-      break;
+  while(index < 128){
+    chunk_t *chunk_ptr = table[index];
+    while(chunk_ptr != NULL){
+        if(((clean == 1 && _get_dirty(chunk_ptr) == 0) || clean == 0) && _get_size(chunk_ptr) >= size){
+          return chunk_ptr;
+        }
+      chunk_ptr = chunk_ptr->next_free;
     }
-    ptr = ptr->next_free;
+    index++;
   }
 
-  return ptr;
+  return NULL;
 }
 
 // allocation d'un chunk propre ou non de taille size
-static inline chunk_t *alloc_chunk(size_t size, char clean)
+static inline chunk_t* alloc_chunk(size_t size, char clean)
 {
   chunk_t *chunk = search_chunk(size, clean);
 
@@ -297,8 +293,7 @@ static inline chunk_t *alloc_chunk(size_t size, char clean)
       del_free_chunk(chunk);
     }
     if(!(CHUNK_SIZE + size > _get_size(chunk) || (_get_size(chunk) - CHUNK_SIZE - size) < WORD_SIZE)){
-      add_free_chunk(cut_chunk(chunk,size));
-    }
+      add_free_chunk(cut_chunk(chunk,size));}
 
     chunk->size_status |= STATUS_MASK;
     return chunk;
@@ -363,7 +358,23 @@ void *calloc(size_t nmemb, size_t size)
   if(size != 0 && nmemb != 0){
     size_t total_size = roundTo(size*nmemb,WORD_SIZE);
 
-    to_return = alloc_chunk(total_size,1)+1;
+    if(search_chunk(total_size,1) != NULL){
+      to_return = alloc_chunk(total_size,1)+1;
+    }else if(search_chunk(total_size,0) != NULL && total_size < LIMIT_CALLOC){
+      to_return = alloc_chunk(total_size,0)+1;
+      memset(to_return, 0, total_size);
+    }else{     
+      block_t *block = (SIZE_MIN_BLOCK > total_size) ? add_block(mmap_block(SIZE_MIN_BLOCK),SIZE_MIN_BLOCK) : add_block(mmap_block(size),size);
+    
+      chunk_t *chunk = block->stack;
+
+      if(!(CHUNK_SIZE + total_size > _get_size(chunk) || (_get_size(chunk) - CHUNK_SIZE - total_size) < WORD_SIZE)){
+        add_free_chunk(cut_chunk(chunk,total_size));}
+
+      chunk->size_status |= STATUS_MASK;
+
+      to_return = chunk + 1;
+    }
   }
 
   //fprintf(stderr, "Sortie calloc %zu\n", (size_t)to_return);
@@ -403,7 +414,7 @@ void *realloc(void *ptr, size_t size)
         to_return = ptr;
       }else{
         add_free_chunk(cut_chunk(old_chunk,size));
-        to_return = old_chunk + 1;
+        to_return = ptr;
       }
     }else if(ptr != NULL && old_chunk->next != NULL && _get_status(old_chunk->next) == 0 &&   \
             _get_size(old_chunk) + _get_size(old_chunk->next) + CHUNK_SIZE >= size){
@@ -411,9 +422,11 @@ void *realloc(void *ptr, size_t size)
 
       merge_w_next(old_chunk);
 
-      add_free_chunk(cut_chunk(old_chunk,size));
+      if(!(CHUNK_SIZE + size > _get_size(old_chunk) || (_get_size(old_chunk) - CHUNK_SIZE - size) < WORD_SIZE)){
+        add_free_chunk(cut_chunk(old_chunk,size));
+      }
       
-      to_return = old_chunk + 1;
+      to_return = ptr;
     }
     #if HAVE_MREMAP
     else if(ptr != NULL && old_chunk->previous == NULL && old_chunk->next == NULL && HAVE_MREMAP){
@@ -469,7 +482,7 @@ void print_memory()
     block_ptr = block_ptr->next;
   }
 
-  fprintf(stderr, "\n");
+  //fprintf(stderr, "\n");
 
   instant++;
 }
