@@ -59,7 +59,7 @@
 
 #define  munmap_block(block)    (munmap(block, block->size + CHUNK_SIZE + BLOCK_SIZE))
 
-#define roundTo(value,roundto)  ((value + (roundto - 1)) & ~(roundto - 1))
+#define roundTo(value, roundto)  ((value + (roundto - 1)) & ~(roundto - 1))
 
 #define f(X)                    ((X < 512) ? (X >> 3) : (log2_fast(X)+55))
 
@@ -192,6 +192,45 @@ static  chunk_t* search_chunk(const size_t size, char clean)
   return NULL;
 }
 
+// coupe un chunk donné en deux et retourne le nouveaux
+static chunk_t *cut_chunk(chunk_t *chunk, const size_t size)
+{
+  chunk_t *new_chunk = (void*)chunk + size + CHUNK_SIZE;
+
+  if(chunk->next != NULL){
+    chunk->next->previous = new_chunk;}
+
+  set_chunk(new_chunk, (_get_size(chunk) - CHUNK_SIZE - size) | _get_dirty(chunk), chunk, chunk->next, NULL, NULL, chunk->block);
+
+  set_chunk(chunk, size | STATUS_MASK | _get_dirty(chunk), chunk->previous, new_chunk, NULL, NULL, chunk->block);
+
+  return new_chunk;
+}
+
+// permet de fusionner un chunk avec le chunk precedent
+static chunk_t *merge_w_previous(chunk_t *chunk)
+{
+  chunk->previous->next = chunk->next;
+  if(chunk->next != NULL){
+    chunk->next->previous = chunk->previous;}
+
+  chunk->previous->size_status +=  (_get_size(chunk) + CHUNK_SIZE);
+
+  return chunk->previous;
+}
+
+// permet de fusionner un chunk avec le chunk suivant
+static chunk_t *merge_w_next(chunk_t *chunk)
+{
+  if(chunk->next->next != NULL){
+    chunk->next->next->previous = chunk;}
+
+  chunk->size_status += (_get_size(chunk->next) + CHUNK_SIZE);
+  chunk->next = chunk->next->next;
+
+  return chunk;
+}
+
 /***************************************************************************
 *                            Gestion des blocks                            *
 ***************************************************************************/
@@ -230,45 +269,6 @@ static block_t* del_block(block_t *block)
   }
 
   return block;
-}
-
-// coupe un chunk donné en deux et retourne le nouveaux
-static chunk_t *cut_chunk(chunk_t *chunk, const size_t size)
-{
-  chunk_t *new_chunk = (void*)chunk + size + CHUNK_SIZE;
-
-  if(chunk->next != NULL){
-    chunk->next->previous = new_chunk;}
-
-  set_chunk(new_chunk, (_get_size(chunk) - CHUNK_SIZE - size) | _get_dirty(chunk), chunk, chunk->next, NULL, NULL, chunk->block);
-
-  set_chunk(chunk, size | STATUS_MASK | _get_dirty(chunk), chunk->previous, new_chunk, NULL, NULL, chunk->block);
-
-  return new_chunk;
-}
-
-// permet de fusionner un chunk avec le chunk precedent
-static chunk_t *merge_w_previous(chunk_t *chunk)
-{
-  chunk->previous->next = chunk->next;
-  if(chunk->next != NULL){
-    chunk->next->previous = chunk->previous;}
-
-  chunk->previous->size_status +=  (_get_size(chunk) + CHUNK_SIZE);
-
-  return chunk->previous;
-}
-
-// permet de fusionner un chunk avec le chunk suivant
-static chunk_t *merge_w_next(chunk_t *chunk)
-{
-  if(chunk->next->next != NULL){
-    chunk->next->next->previous = chunk;}
-
-  chunk->size_status += (_get_size(chunk->next) + CHUNK_SIZE);
-  chunk->next = chunk->next->next;
-
-  return chunk;
 }
 
 /***************************************************************************
@@ -331,18 +331,18 @@ void *malloc(size_t size)
   pthread_mutex_lock(&mutex);
   
   //fprintf(stderr, "Entree malloc %zu\n", size);
-
+  
   void *to_return = NULL;
-
+  
   if(size != 0){
     size = roundTo(size,WORD_SIZE);
     to_return = alloc_chunk(search_chunk(size,0),size) + 1;
   }
 
   //fprintf(stderr, "Sortie malloc %zu\n", (size_t)to_return);
-
+  
   pthread_mutex_unlock(&mutex);
-
+  
   return to_return;
 }
 
@@ -351,12 +351,12 @@ void *calloc(size_t nmemb, size_t size)
   pthread_mutex_lock(&mutex);
   
   //fprintf(stderr, "Entree calloc\n");
-
+  
   void * to_return = NULL;
-
+  
   if(size != 0 && nmemb != 0){
     size_t total_size = roundTo(size*nmemb,WORD_SIZE);
-
+    
     chunk_t *chunk = NULL;
 
     if((chunk = search_chunk(total_size,1)) != NULL){
@@ -366,21 +366,21 @@ void *calloc(size_t nmemb, size_t size)
       memset(to_return, 0, total_size);
     }else{     
       block_t *block = (SIZE_MIN_BLOCK > total_size) ? add_block(mmap_block(SIZE_MIN_BLOCK),SIZE_MIN_BLOCK) : add_block(mmap_block(size),size);
-    
+      
       chunk_t *chunk = block->stack;
-
+      
       if(!(CHUNK_SIZE + total_size > _get_size(chunk) || (_get_size(chunk) - CHUNK_SIZE - total_size) < WORD_SIZE)){
         add_free_chunk(cut_chunk(chunk,total_size));}
-
+      
       chunk->size_status |= STATUS_MASK;
-
+      
       to_return = chunk + 1;
     }
   }
-
+  
   //fprintf(stderr, "Sortie calloc %zu\n", (size_t)to_return);
   pthread_mutex_unlock(&mutex);
-
+  
   return to_return;
 }
 
