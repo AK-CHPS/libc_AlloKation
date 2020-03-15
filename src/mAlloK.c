@@ -75,7 +75,7 @@
 
 #define size_small_enough(chunk, size)  (!(CHUNK_SIZE + size > get_size(chunk) || (get_size(chunk) - CHUNK_SIZE - size) < WORD_SIZE))
 
-#define last_chunk(chunk)               (chunk != NULL && chunk->previous == NULL && chunk->next == NULL)
+#define only_chunk(chunk)               (chunk != NULL && chunk->previous == NULL && chunk->next == NULL)
 
 #define next_is_free(chunk)             (chunk != NULL && chunk->next != NULL && get_status(chunk->next) == 0)
 
@@ -265,7 +265,7 @@ static void free_chunk(chunk_t *chunk)
 
   chunk->size_status = get_size(chunk) | DIRTY_MASK;
 
-  if(last_chunk(chunk)){
+  if(only_chunk(chunk)){
     munmap_chunk(chunk);
   }else{
     add_free_chunk(chunk);
@@ -358,7 +358,7 @@ void *realloc(void *ptr, size_t size)
         add_free_chunk(cut_chunk(old_chunk, size));
     }
     #if HAVE_MREMAP    
-    else if(last_chunk(old_chunk) && HAVE_MREMAP){
+    else if(only_chunk(old_chunk) && HAVE_MREMAP){
       chunk_t *new_chunk = mremap_chunk(old_chunk, size);
 
       new_chunk->size_status = size + DIRTY_MASK + STATUS_MASK;
