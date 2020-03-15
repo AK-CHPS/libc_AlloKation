@@ -308,7 +308,7 @@ void *calloc(size_t nmemb, size_t size)
     }else if(total_size < LIMIT_CALLOC && (chunk = search_chunk(total_size,0)) != NULL){
       to_return = memset(chunk_to_ptr(alloc_chunk(chunk, total_size)), 0, total_size);
     }else{
-      chunk_t *chunk = (SIZE_MIN_CHUNK > total_size) ? mmap_chunk(SIZE_MIN_CHUNK) : mmap_chunk(size);
+      chunk_t *chunk = (SIZE_MIN_CHUNK > total_size) ? mmap_chunk(SIZE_MIN_CHUNK) : mmap_chunk(total_size);
 
       if(size_small_enough(chunk, total_size))  
         add_free_chunk(cut_chunk(chunk, total_size));
