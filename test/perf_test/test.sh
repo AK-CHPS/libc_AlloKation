@@ -10,10 +10,10 @@ do
 	echo "i=$i sur 1000000"
 
 	gcc -D N=1000 -D M=$i perf_test.c -o perf_test -O3
-	./perf_test >> dat/OUTPUT_libc.dat
+	./perf_test >> dat/OUTPUT_libc.dat &
 
 	gcc -D N=1000 -D M=$i perf_test.c -o perf_test -O3
-	LD_PRELOAD=/usr/local/lib/libmAlloK.so ./perf_test >> dat/OUTPUT_AK.dat
+	LD_PRELOAD=/usr/local/lib/libmAlloK.so ./perf_test >> dat/OUTPUT_AK.dat &
 
 	i=$(( $i * 2))
 done
