@@ -1,2 +1,0 @@
-pour compiler en BEST FIT sans le debuggage:
-	gcc -D N=100 -D WARN=0 -D STRATEGY=BEST_FIT test.c -o test -O3
