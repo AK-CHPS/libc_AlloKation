@@ -1,6 +1,4 @@
-//#include "malloc.h"
 #include <stddef.h>
-//#include <stdio.h>
 
 #ifdef linux
   #define _GNU_SOURCE
@@ -276,7 +274,7 @@ static void free_chunk(chunk_t *chunk)
 //                            Fonctions Standards                         //
 ////////////////////////////////////////////////////////////////////////////
 
-void *malloc(size_t size)
+void *mAlloK(size_t size)
 {
   pthread_mutex_lock(&mutex);
   
@@ -292,7 +290,7 @@ void *malloc(size_t size)
   return to_return;
 }
 
-void *calloc(size_t nmemb, size_t size)
+void *cAlloK(size_t nmemb, size_t size)
 {
   pthread_mutex_lock(&mutex);
   
@@ -324,7 +322,7 @@ void *calloc(size_t nmemb, size_t size)
   return to_return;
 }
 
-void free(void *ptr)
+void freeAK(void *ptr)
 {
   pthread_mutex_lock(&mutex);
   
@@ -335,7 +333,7 @@ void free(void *ptr)
   pthread_mutex_unlock(&mutex);
 }
 
-void *realloc(void *ptr, size_t size)
+void *reAlloK(void *ptr, size_t size)
 {
   pthread_mutex_lock(&mutex);
 
