@@ -42,6 +42,7 @@ int main(int argc, char const *argv[])
 {
 	srand(time(NULL));
 
+
 	int *tab[N] = {};
 	size_t size_tab[N] = {};
 	size_t size = 0, new_size = 0;
@@ -142,12 +143,12 @@ int main(int argc, char const *argv[])
 
 	printf("%f\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\n",													\
 			log10(M),																				\
-			(double) malloc_cpt/malloc_sum, 														\
-			(double) calloc_cpt/calloc_sum,															\
-			(double) realloc_cpt/realloc_sum,														\
-			(double) free_cpt/free_sum,																\
-			(double) write_cpt/write_sum,															\
-			(double) read_cpt/read_sum);
+			(double) malloc_sum/malloc_cpt, 														\
+			(double) calloc_sum/calloc_cpt,															\
+			(double) realloc_sum/realloc_cpt,														\
+			(double) free_sum/free_cpt,																\
+			(double) write_sum/write_cpt,															\
+			(double) read_sum/read_cpt);
 
 	return 0;
 }

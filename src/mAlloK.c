@@ -73,7 +73,7 @@
 
 #define size_small_enough(chunk, size)  (!(CHUNK_SIZE + size > get_size(chunk) || (get_size(chunk) - CHUNK_SIZE - size) < WORD_SIZE))
 
-#define last_chunk(chunk)               (chunk != NULL && chunk->previous == NULL && chunk->next == NULL)
+#define only_chunk(chunk)               (chunk != NULL && chunk->previous == NULL && chunk->next == NULL)
 
 #define next_is_free(chunk)             (chunk != NULL && chunk->next != NULL && get_status(chunk->next) == 0)
 
@@ -111,6 +111,15 @@ static chunk_t *table[128] = {};
 
 // initialisation mutex
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// compteurs memoire
+static size_t succes_cpt = 0;
+static size_t fail_cpt = 0;
+static size_t allocated_memory = 0;
+static size_t free_cpt = 0;
+static size_t malloc_cpt = 0;
+static size_t calloc_cpt = 0;
+static size_t realloc_cpt = 0;
 
 ////////////////////////////////////////////////////////////////////////////
 //                        Gestion des chunks libres                       //
@@ -167,6 +176,7 @@ static  chunk_t* search_chunk(const size_t size, char clean)
     chunk_t *chunk_ptr = table[index];
     while(chunk_ptr != NULL){
         if(((clean == 1 && get_dirty(chunk_ptr) == 0) || clean == 0) && get_size(chunk_ptr) >= size){
+          succes_cpt++;
           return chunk_ptr;
         }
       chunk_ptr = chunk_ptr->next_free;
@@ -174,11 +184,13 @@ static  chunk_t* search_chunk(const size_t size, char clean)
     index++;
   }
 
+  fail_cpt++;
+
   return NULL;
 }
 
 ////////////////////////////////////////////////////////////////////////////
-//                            Gestion des blocks                          //
+//                            Gestion des chunks                          //
 ////////////////////////////////////////////////////////////////////////////
 
 // coupe un chunk donné en deux et retourne le nouveaux
@@ -228,10 +240,12 @@ static chunk_t* alloc_chunk(chunk_t * chunk, const size_t size)
 {
   if(chunk == NULL && size > SIZE_MIN_CHUNK){
     chunk = mmap_chunk(size);
+    allocated_memory += size;
     set_chunk(chunk, size | DIRTY_MASK | STATUS_MASK, NULL, NULL, NULL, NULL);
   }else{
     if(chunk == NULL){
       chunk = mmap_chunk(SIZE_MIN_CHUNK);
+      allocated_memory += SIZE_MIN_CHUNK;
       set_chunk(chunk, SIZE_MIN_CHUNK, NULL, NULL, NULL, NULL);
     }else{
       del_free_chunk(chunk);
@@ -263,7 +277,8 @@ static void free_chunk(chunk_t *chunk)
 
   chunk->size_status = get_size(chunk) | DIRTY_MASK;
 
-  if(last_chunk(chunk)){
+  if(only_chunk(chunk)){
+    allocated_memory -= get_size(chunk);
     munmap_chunk(chunk);
   }else{
     add_free_chunk(chunk);
@@ -278,6 +293,8 @@ void *mAlloK(size_t size)
 {
   pthread_mutex_lock(&mutex);
   
+  malloc_cpt++;
+
   void *to_return = NULL;
 
   if(size != 0){
@@ -294,6 +311,8 @@ void *cAlloK(size_t nmemb, size_t size)
 {
   pthread_mutex_lock(&mutex);
   
+  calloc_cpt++;
+
   void * to_return = NULL;
 
   if(size != 0 && nmemb != 0){
@@ -326,6 +345,8 @@ void freeAK(void *ptr)
 {
   pthread_mutex_lock(&mutex);
   
+  free_cpt++;
+
   if(ptr != NULL){
     free_chunk(ptr_to_chunk(ptr));
   }
@@ -336,6 +357,8 @@ void freeAK(void *ptr)
 void *reAlloK(void *ptr, size_t size)
 {
   pthread_mutex_lock(&mutex);
+
+  realloc_cpt++;
 
   void *to_return = ptr;
 
@@ -356,7 +379,8 @@ void *reAlloK(void *ptr, size_t size)
         add_free_chunk(cut_chunk(old_chunk, size));
     }
     #if HAVE_MREMAP    
-    else if(last_chunk(old_chunk) && HAVE_MREMAP){
+    else if(only_chunk(old_chunk) && HAVE_MREMAP){
+      allocated_memory += (size - old_size);
       chunk_t *new_chunk = mremap_chunk(old_chunk, size);
 
       new_chunk->size_status = size + DIRTY_MASK + STATUS_MASK;
@@ -377,4 +401,14 @@ void *reAlloK(void *ptr, size_t size)
   pthread_mutex_unlock(&mutex);
 
   return to_return;
+}
+
+void *print_tacker()
+{
+  fprintf(stderr, "Ratio de succes sur la recherche: %zu/%zu\n", succes_cpt, fail_cpt);
+  fprintf(stderr, "Quantite de mémoire reservé: %zu octets\n", allocated_memory);
+  fprintf(stderr, "Nombre de malloc: %zu\n", malloc_cpt);
+  fprintf(stderr, "Nombre de free: %zu\n", free_cpt);
+  fprintf(stderr, "Nombre de calloc: %zu\n", calloc_cpt);
+  fprintf(stderr, "Nombre de realloc: %zu\n", realloc_cpt);
 }
