@@ -1,6 +1,6 @@
 set title 'Performances de malloc'
 set xlabel 'nombre d''octets alloués (log_1_0)'
-set ylabel 'nombre d''octets alloués/cycle'
+set ylabel 'nombre de cycles/octet'
 plot 'dat/OUTPUT_AK.dat' using 1:2 title 'custom malloc' with line, 'dat/OUTPUT_libc.dat' using 1:2 title 'libc malloc' with line
 pause -1 "Appuyer sur entrer"
 set title 'Performances de calloc'
